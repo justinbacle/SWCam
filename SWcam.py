@@ -35,7 +35,7 @@ class FrameGrabber(QtCore.QObject):
                         binImage = component.data.reshape(component.height, component.width)
                         self.imageReady.emit(binImage)
             except TimeoutException:
-                logging.error(f"Timeout error")
+                logging.error("Timeout error")
 
 
 class HistogramProcess(QtCore.QObject):
