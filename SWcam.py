@@ -82,6 +82,7 @@ class ImageProcess(QtCore.QObject):
     def __init__(self, parent=None):
         super(ImageProcess, self).__init__(parent)
         self.LUT = None
+        self.Gamma = None
         self.binImage = None
         # self.WB = cv2.xphoto.createSimpleWB()
         # self.WB = cv2.xphoto.createGrayworldWB()
@@ -92,13 +93,17 @@ class ImageProcess(QtCore.QObject):
     def setLUT(self, LUT):
         self.LUT = LUT
 
+    def setGamma(self, redGamma, greenGamma, blueGamma):
+        self.Gamma = [redGamma, greenGamma, blueGamma]
+
     def setImg(self, binImage):
         self.binImage = binImage
 
     def run(self):
-        while True:
+        try:
+            # while True:
             if self.binImage is not None:
-                rgbImg = processImg(self.binImage, LUT=self.LUT)
+                rgbImg = processImg(self.binImage, Gamma=self.Gamma)
                 self.imageReady.emit(rgbImg)
                 qImg = QtGui.QImage(
                     rgbImg.data,
@@ -110,44 +115,49 @@ class ImageProcess(QtCore.QObject):
                 self.qImageReady.emit(qImg)
                 self.binImage = None
             else:
-                time.sleep(0.01)
+                print('got None image')
+
+        except Exception as e:
+            print(e)
 
 
 def processImg(rgbImg, LUT=None, CLAHE=None, Gamma=None, WB=None):
 
+    rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
+
     # CLAHE METHOD
     if CLAHE is not None:
-        rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
         for i in range(3):
             rgbImg[i] = CLAHE.apply(rgbImg[i])
         rgbImg = cv2.convertScaleAbs(rgbImg)
 
     # 8-Bit LUT METHOD FAST, noisy  <-- works
-    elif LUT is not None:
-        rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
+    if LUT is not None:
         rgbImg = cv2.convertScaleAbs(rgbImg, alpha=1/8)
         rgbImg = cv2.LUT(rgbImg, LUT)
 
-    # Gamma Luma METHOD NOT WORKING
-    elif Gamma is not None:
-        rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
-        rgbImg = rgbImg.astype(np.float32)
-        labImg = cv2.cvtColor(rgbImg, cv2.COLOR_RGB2Lab)
-        mid = 0.5
-        mean = np.mean(labImg[0])
-        gamma = math.log(mid*255)/math.log(mean)
-        labImg[0] = np.power(labImg[0], gamma)
-        rgbImg = cv2.cvtColor(labImg, cv2.COLOR_Lab2RGB)
-        rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
+    if Gamma is not None:
+        # Gamma Luma METHOD NOT WORKING
+        # rgbImg = rgbImg.astype(np.float32)
+        # labImg = cv2.cvtColor(rgbImg, cv2.COLOR_RGB2Lab)
+        # mid = 0.5
+        # mean = np.mean(labImg[0])
+        # gamma = math.log(mid*255)/math.log(mean)
+        # labImg[0] = np.power(labImg[0], gamma)
+        # rgbImg = cv2.cvtColor(labImg, cv2.COLOR_Lab2RGB)
+        # rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
 
         # # Gamma RGB METHOD SLOW
-        # rgbImg = cv2.cvtColor(np.uint16(binImage), cv2.COLOR_BAYER_RG2RGB_EA)
-        # mid = 0.5
-        # mean = np.mean(rgbImg)
-        # gamma = math.log(mid*255)/math.log(mean)
-        # for i in range(3):
-        #     rgbImg[i] = np.power(rgbImg[i], gamma)
-        # rgbImg = cv2.convertScaleAbs(rgbImg)
+        rgbImg = rgbImg.astype(np.float32) / np.max(rgbImg)
+        if isinstance(Gamma, float):
+            rgbImg = np.power(rgbImg, Gamma)
+            rgbImg = rgbImg * 255
+            rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
+        elif isinstance(Gamma, list):
+            for i in range(3):
+                rgbImg[i] = np.power(rgbImg[i], Gamma[i])
+            rgbImg = rgbImg * 255
+            rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
 
     # Auto White Balance
     if WB is not None:
@@ -185,7 +195,7 @@ class SWCameraGui(QtWidgets.QWidget):
         self.acquisitionThread = QtCore.QThread()
         self.grabber = FrameGrabber(self.ia)
         self.grabber.moveToThread(self.acquisitionThread)
-        self.grabber.imageReady.connect(self.clbkProcessImage)
+        # self.grabber.imageReady.connect(self.clbkProcessImage)
         self.grabber.imageReady.connect(self.saveImgThread)
         self.grabber.imageReady.connect(self.updateHistogram)
         self.acquisitionThread.started.connect(self.grabber.run)
@@ -196,13 +206,12 @@ class SWCameraGui(QtWidgets.QWidget):
         self.imageProcess = ImageProcess()
         self.imageProcess.moveToThread(self.imageProcessThread)
         self.imageProcess.qImageReady.connect(self.drawQimg)
-        # self.imageProcess.imageReady.connect(self.updateHistogram)
         self.imageProcessThread.started.connect(self.imageProcess.run)
+        self.imageProcessThread.finished.connect(self.clbkProcessImage)
 
         self.histogramProcessThread = QtCore.QThread()
         self.histogramProcess = HistogramProcess()
         self.histogramProcess.moveToThread(self.histogramProcessThread)
-        # self.histogramProcess.setPlottingWidget(self.histographPlot)
         self.histogramProcess.dataReady.connect(self.updateHistogramWidget)
         self.histogramProcessThread.started.connect(self.histogramProcess.run)
 
@@ -275,6 +284,34 @@ class SWCameraGui(QtWidgets.QWidget):
         self.mode.currentTextChanged.connect(self.clbkModeChange)
         self.controlLayout.addWidget(self.mode, i.postinc(), 1)
 
+        # RGB controls (preview)
+        _rgbLabel = QtWidgets.QLabel("RGB Preview Controls :")
+        self.controlLayout.addWidget(_rgbLabel, i.postinc(), 0)
+        self.redGamma = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.redGamma.setMinimum(1)
+        self.redGamma.setMaximum(100)
+        self.redGamma.setValue(100)
+        self.redGamma.valueChanged.connect(self.updateGamma)
+        self.controlLayout.addWidget(self.redGamma, i.val(), 1)
+        self.redGammaLabel = QtWidgets.QLabel()
+        self.controlLayout.addWidget(self.redGammaLabel, i.postinc(), 0)
+        self.greenGamma = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.greenGamma.setMinimum(1)
+        self.greenGamma.setMaximum(100)
+        self.greenGamma.setValue(100)
+        self.greenGamma.valueChanged.connect(self.updateGamma)
+        self.controlLayout.addWidget(self.greenGamma, i.val(), 1)
+        self.greenGammaLabel = QtWidgets.QLabel()
+        self.controlLayout.addWidget(self.greenGammaLabel, i.postinc(), 0)
+        self.blueGamma = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.blueGamma.setMinimum(1)
+        self.blueGamma.setMaximum(100)
+        self.blueGamma.setValue(100)
+        self.blueGamma.valueChanged.connect(self.updateGamma)
+        self.controlLayout.addWidget(self.blueGamma, i.val(), 1)
+        self.blueGammaLabel = QtWidgets.QLabel()
+        self.controlLayout.addWidget(self.blueGammaLabel, i.postinc(), 0)
+
         self.rightLayout.addLayout(self.controlLayout)
 
         self.histogram = pyqtgraph.GraphicsLayoutWidget()
@@ -328,12 +365,15 @@ class SWCameraGui(QtWidgets.QWidget):
 
     def clbkProcessImage(self, binImage):
         self.imageProcess.setImg(binImage)
+        # if self.imageProcessThread.isFinished():
         self.imageProcessThread.start()
+        # if self.imageProcess.isFinished():
+        #     self.imageProcess.run()
 
     def updateHistogram(self, rgbImage):
-        # too slow for real time ? put in thread ?
         self.histogramProcess.setImg(rgbImage)
         self.histogramProcessThread.start()
+        ...
 
     def updateHistogramWidget(self, dataList):
         x, y = dataList
@@ -400,6 +440,7 @@ class SWCameraGui(QtWidgets.QWidget):
             self.runButton.setText("Stop")
             self.recordButton.setEnabled(True)
             self.histogramProcessThread.start()
+            self.updateGamma()
 
     def saveImgThread(self, binImage):
         if self.recordButton.isChecked():
@@ -487,6 +528,15 @@ class SWCameraGui(QtWidgets.QWidget):
         self.mode.clear()
         for mode in self.ia.remote_device.node_map.VideoMode.symbolics:
             self.mode.addItem(mode)
+
+    def updateGamma(self):
+        redGamma = self.redGamma.value() / 100
+        self.redGammaLabel.setText("R : " + str(redGamma))
+        greenGamma = self.greenGamma.value() / 100
+        self.greenGammaLabel.setText("R : " + str(greenGamma))
+        blueGamma = self.blueGamma.value() / 100
+        self.blueGammaLabel.setText("R : " + str(blueGamma))
+        self.imageProcess.setGamma(redGamma, greenGamma, blueGamma)
 
 
 def SWCamera():
