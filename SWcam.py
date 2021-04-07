@@ -54,28 +54,29 @@ class HistogramProcess(QtCore.QObject):
         self.image = image
 
     def run(self):
-        while True:
-            if self.image is not None:
-                yR, x = np.histogram(
-                    np.log(self.image[0::2, :].flatten()[0::2]),
-                    bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
-                )
-                yG1, x = np.histogram(
-                    np.log(self.image[0::2, :].flatten()[1::2]),
-                    bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
-                )
-                yG2, x = np.histogram(
-                    np.log(self.image[1::2, :].flatten()[0::2]),
-                    bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
-                )
-                yB, x = np.histogram(
-                    np.log(self.image[1::2, :].flatten()[1::2]),
-                    bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
-                )
-                self.dataReady.emit([x, [yR, yG1, yG2, yR]])
-                self.image = None
-            else:
-                time.sleep(0.01)
+        # while True:
+        if self.image is not None:
+            yR, x = np.histogram(
+                np.log(self.image[0::2, :].flatten()[0::2]),
+                bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
+            )
+            yG1, x = np.histogram(
+                np.log(self.image[0::2, :].flatten()[1::2]),
+                bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
+            )
+            yG2, x = np.histogram(
+                np.log(self.image[1::2, :].flatten()[0::2]),
+                bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
+            )
+            yB, x = np.histogram(
+                np.log(self.image[1::2, :].flatten()[1::2]),
+                bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
+            )
+            self.dataReady.emit([x, [yR, yG1, yG2, yR]])
+            self.image = None
+        else:
+            print(f"{self} got {self.image} image to process")
+        self.finished.emit()
 
 
 class ImageProcess(QtCore.QObject):
@@ -89,6 +90,7 @@ class ImageProcess(QtCore.QObject):
 
     qImageReady = QtCore.Signal(QtGui.QImage)
     imageReady = QtCore.Signal(np.ndarray)
+    finished = QtCore.Signal()
 
     def setLUT(self, LUT):
         self.LUT = LUT
@@ -103,7 +105,7 @@ class ImageProcess(QtCore.QObject):
         try:
             # while True:
             if self.binImage is not None:
-                rgbImg = processImg(self.binImage, Gamma=self.Gamma)
+                rgbImg = processImg(self.binImage, Gamma=None, LUT=self.LUT)
                 self.imageReady.emit(rgbImg)
                 qImg = QtGui.QImage(
                     rgbImg.data,
@@ -115,8 +117,8 @@ class ImageProcess(QtCore.QObject):
                 self.qImageReady.emit(qImg)
                 self.binImage = None
             else:
-                print('got None image')
-
+                print(f"{self} got {self.binImage} image to process")
+            self.finished.emit()
         except Exception as e:
             print(e)
 
@@ -158,6 +160,7 @@ def processImg(rgbImg, LUT=None, CLAHE=None, Gamma=None, WB=None):
                 rgbImg[i] = np.power(rgbImg[i], Gamma[i])
             rgbImg = rgbImg * 255
             rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
+            rgbImg = rgbImg.astype(np.uint8)
 
     # Auto White Balance
     if WB is not None:
@@ -195,8 +198,8 @@ class SWCameraGui(QtWidgets.QWidget):
         self.acquisitionThread = QtCore.QThread()
         self.grabber = FrameGrabber(self.ia)
         self.grabber.moveToThread(self.acquisitionThread)
-        # self.grabber.imageReady.connect(self.clbkProcessImage)
         self.grabber.imageReady.connect(self.saveImgThread)
+        self.grabber.imageReady.connect(self.clbkProcessImage)
         self.grabber.imageReady.connect(self.updateHistogram)
         self.acquisitionThread.started.connect(self.grabber.run)
         self.acquisitionThread.start()
@@ -204,15 +207,16 @@ class SWCameraGui(QtWidgets.QWidget):
     def initImageProcessThread(self):
         self.imageProcessThread = QtCore.QThread()
         self.imageProcess = ImageProcess()
-        self.imageProcess.moveToThread(self.imageProcessThread)
         self.imageProcess.qImageReady.connect(self.drawQimg)
+        # self.imageProcess.finished.connect(self.imageProcessThread.quit)
+        self.imageProcess.moveToThread(self.imageProcessThread)
         self.imageProcessThread.started.connect(self.imageProcess.run)
-        self.imageProcessThread.finished.connect(self.clbkProcessImage)
+        # self.imageProcessThread.finished.connect(self.clbkProcessImage)
 
         self.histogramProcessThread = QtCore.QThread()
         self.histogramProcess = HistogramProcess()
-        self.histogramProcess.moveToThread(self.histogramProcessThread)
         self.histogramProcess.dataReady.connect(self.updateHistogramWidget)
+        self.histogramProcess.moveToThread(self.histogramProcessThread)
         self.histogramProcessThread.started.connect(self.histogramProcess.run)
 
     def initUI(self):
@@ -370,8 +374,8 @@ class SWCameraGui(QtWidgets.QWidget):
         # if self.imageProcess.isFinished():
         #     self.imageProcess.run()
 
-    def updateHistogram(self, rgbImage):
-        self.histogramProcess.setImg(rgbImage)
+    def updateHistogram(self, binImage):
+        self.histogramProcess.setImg(binImage)
         self.histogramProcessThread.start()
         ...
 
@@ -439,7 +443,6 @@ class SWCameraGui(QtWidgets.QWidget):
             self.imageProcessThread.start()
             self.runButton.setText("Stop")
             self.recordButton.setEnabled(True)
-            self.histogramProcessThread.start()
             self.updateGamma()
 
     def saveImgThread(self, binImage):
