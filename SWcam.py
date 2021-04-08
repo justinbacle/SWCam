@@ -1,7 +1,5 @@
 import sys
 import os
-import time
-import pdb
 from PySide2 import QtWidgets, QtGui, QtOpenGL, QtCore  # noqa F401
 from harvesters.core import Harvester
 from harvesters.core import TimeoutException
