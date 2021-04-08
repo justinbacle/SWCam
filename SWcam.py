@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import pdb
 from PySide2 import QtWidgets, QtGui, QtOpenGL, QtCore  # noqa F401
 from harvesters.core import Harvester
 from harvesters.core import TimeoutException
@@ -69,7 +70,8 @@ class HistogramProcess(QtCore.QThread):
         self.image = None
 
     dataReady = QtCore.Signal(list)
-    NUM_BINS = 64
+    finished = QtCore.Signal()
+    NUM_BINS = 2**8
 
     # def setPlottingWidget(self, plotWidget):
     #     self.plotWidget = plotWidget
@@ -119,6 +121,7 @@ class HistogramProcess(QtCore.QThread):
             else:
                 print(f"{self} got {self.image} image to process")
             self.finished.emit()
+
         except Exception as e:
             raise(e)
 
@@ -173,7 +176,7 @@ class ImageProcess(QtCore.QThread):
     def run(self):
         try:
             if self.binImage is not None:
-                rgbImg = processImg(self.binImage, Gamma=self.Gamma, LUT=None)
+                rgbImg = processImg(self.binImage, Gamma=None, LUT=self.LUT)
                 self.imageReady.emit(rgbImg)
                 qImg = QtGui.QImage(
                     rgbImg.data,
@@ -268,7 +271,8 @@ class SWCameraGui(QtWidgets.QWidget):
 
     def initImageProcessThread(self):
         self.imageProcess = ImageProcess()
-        self.imageProcess.qImageReady.connect(self.drawQimg)
+        # self.imageProcess.qImageReady.connect(self.drawQimg)
+        self.imageProcess.imageReady.connect(self.drawImg)
 
         self.histogramProcess = HistogramProcess()
         self.histogramProcess.dataReady.connect(self.updateHistogramWidget)
