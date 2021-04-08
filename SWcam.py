@@ -1,7 +1,6 @@
 import sys
 import os
-import time
-from PySide6 import QtWidgets, QtGui, QtOpenGL, QtCore  # noqa F401
+from PySide2 import QtWidgets, QtGui, QtOpenGL, QtCore  # noqa F401
 from harvesters.core import Harvester
 from harvesters.core import TimeoutException
 import logging
@@ -19,14 +18,34 @@ import config
 import imageIO
 
 
-class FrameGrabber(QtCore.QObject):
+class FrameGrabber(QtCore.QThread):
     def __init__(self, ia, parent=None):
         super(FrameGrabber, self).__init__(parent)
+        self.mutex = QtCore.QMutex()
+        self.condition = QtCore.QWaitCondition()
+
         self.ia = ia
 
     imageReady = QtCore.Signal(np.ndarray)
 
+    def process(self):
+        try:
+            if not self.isRunning():
+                self.start(QtCore.QThread.HighPriority)
+            else:
+                self.restart = True
+                self.condition.wakeOne()
+        except Exception as e:
+            raise(e)
+
+    def stop(self):
+        self.mutex.lock()
+        self.abort = True
+        self.condition.wakeOne()
+        self.mutex.unlock()
+
     def run(self):
+        self.mutex.lock()
         while self.ia.is_acquiring():
             try:
                 with self.ia.fetch_buffer(timeout=1) as buffer:
@@ -36,25 +55,48 @@ class FrameGrabber(QtCore.QObject):
                         self.imageReady.emit(binImage)
             except TimeoutException:
                 logging.error("Timeout error")
+        self.mutex.unlock()
 
 
-class HistogramProcess(QtCore.QObject):
+class HistogramProcess(QtCore.QThread):
     def __init__(self, parent=None):
         super(HistogramProcess, self).__init__(parent)
+        self.mutex = QtCore.QMutex()
+        self.condition = QtCore.QWaitCondition()
+
         # self.plotWidget = None
         self.image = None
 
     dataReady = QtCore.Signal(list)
-    NUM_BINS = 64
+    finished = QtCore.Signal()
+    NUM_BINS = 2**8
 
     # def setPlottingWidget(self, plotWidget):
     #     self.plotWidget = plotWidget
 
+    def stop(self):
+        self.mutex.lock()
+        self.abort = True
+        self.condition.wakeOne()
+        self.mutex.unlock()
+
     def setImg(self, image):
+        self.mutex.lock()
         self.image = image
+        self.mutex.unlock()
+
+    def process(self):
+        try:
+            if not self.isRunning():
+                self.start(QtCore.QThread.LowPriority)
+            else:
+                self.restart = True
+                self.condition.wakeOne()
+        except Exception as e:
+            raise(e)
 
     def run(self):
-        while True:
+        try:
             if self.image is not None:
                 yR, x = np.histogram(
                     np.log(self.image[0::2, :].flatten()[0::2]),
@@ -75,30 +117,64 @@ class HistogramProcess(QtCore.QObject):
                 self.dataReady.emit([x, [yR, yG1, yG2, yR]])
                 self.image = None
             else:
-                time.sleep(0.01)
+                print(f"{self} got {self.image} image to process")
+            self.finished.emit()
+
+        except Exception as e:
+            raise(e)
 
 
-class ImageProcess(QtCore.QObject):
+class ImageProcess(QtCore.QThread):
     def __init__(self, parent=None):
         super(ImageProcess, self).__init__(parent)
+        self.mutex = QtCore.QMutex()
+        self.condition = QtCore.QWaitCondition()
+
         self.LUT = None
+        self.Gamma = None
         self.binImage = None
         # self.WB = cv2.xphoto.createSimpleWB()
         # self.WB = cv2.xphoto.createGrayworldWB()
 
     qImageReady = QtCore.Signal(QtGui.QImage)
     imageReady = QtCore.Signal(np.ndarray)
+    finished = QtCore.Signal()
+
+    def stop(self):
+        self.mutex.lock()
+        self.abort = True
+        self.condition.wakeOne()
+        self.mutex.unlock()
 
     def setLUT(self, LUT):
+        self.mutex.lock()
         self.LUT = LUT
+        self.mutex.unlock()
+
+    def setGamma(self, redGamma, greenGamma, blueGamma):
+        self.mutex.lock()
+        self.Gamma = [redGamma, greenGamma, blueGamma]
+        self.mutex.unlock()
 
     def setImg(self, binImage):
+        self.mutex.lock()
         self.binImage = binImage
+        self.mutex.unlock()
+
+    def process(self):
+        try:
+            if not self.isRunning():
+                self.start(QtCore.QThread.LowPriority)
+            else:
+                self.restart = True
+                self.condition.wakeOne()
+        except Exception as e:
+            raise e
 
     def run(self):
-        while True:
+        try:
             if self.binImage is not None:
-                rgbImg = processImg(self.binImage, LUT=self.LUT)
+                rgbImg = processImg(self.binImage, Gamma=None, LUT=self.LUT)
                 self.imageReady.emit(rgbImg)
                 qImg = QtGui.QImage(
                     rgbImg.data,
@@ -108,52 +184,57 @@ class ImageProcess(QtCore.QObject):
                     QtGui.QImage.Format_RGB888
                 )
                 self.qImageReady.emit(qImg)
-                self.binImage = None
             else:
-                time.sleep(0.01)
+                print(f"{self} got {self.binImage} image to process")
+            # fails here ? is okay if a raise  happens
+            self.finished.emit()
+        except Exception as e:
+            raise(e)
 
 
 def processImg(rgbImg, LUT=None, CLAHE=None, Gamma=None, WB=None):
 
+    rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
+
     # CLAHE METHOD
     if CLAHE is not None:
-        rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
         for i in range(3):
             rgbImg[i] = CLAHE.apply(rgbImg[i])
         rgbImg = cv2.convertScaleAbs(rgbImg)
 
     # 8-Bit LUT METHOD FAST, noisy  <-- works
-    elif LUT is not None:
-        rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
+    if LUT is not None:
         rgbImg = cv2.convertScaleAbs(rgbImg, alpha=1/8)
         rgbImg = cv2.LUT(rgbImg, LUT)
 
-    # Gamma Luma METHOD NOT WORKING
-    elif Gamma is not None:
-        rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
-        rgbImg = rgbImg.astype(np.float32)
-        labImg = cv2.cvtColor(rgbImg, cv2.COLOR_RGB2Lab)
-        mid = 0.5
-        mean = np.mean(labImg[0])
-        gamma = math.log(mid*255)/math.log(mean)
-        labImg[0] = np.power(labImg[0], gamma)
-        rgbImg = cv2.cvtColor(labImg, cv2.COLOR_Lab2RGB)
-        rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
+    if Gamma is not None:
+        # Gamma Luma METHOD NOT WORKING
+        # rgbImg = rgbImg.astype(np.float32)
+        # labImg = cv2.cvtColor(rgbImg, cv2.COLOR_RGB2Lab)
+        # mid = 0.5
+        # mean = np.mean(labImg[0])
+        # gamma = math.log(mid*255)/math.log(mean)
+        # labImg[0] = np.power(labImg[0], gamma)
+        # rgbImg = cv2.cvtColor(labImg, cv2.COLOR_Lab2RGB)
+        # rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
 
         # # Gamma RGB METHOD SLOW
-        # rgbImg = cv2.cvtColor(np.uint16(binImage), cv2.COLOR_BAYER_RG2RGB_EA)
-        # mid = 0.5
-        # mean = np.mean(rgbImg)
-        # gamma = math.log(mid*255)/math.log(mean)
-        # for i in range(3):
-        #     rgbImg[i] = np.power(rgbImg[i], gamma)
-        # rgbImg = cv2.convertScaleAbs(rgbImg)
+        rgbImg = rgbImg.astype(np.float32) / np.max(rgbImg)
+        if isinstance(Gamma, float):
+            rgbImg = np.power(rgbImg, Gamma)
+            rgbImg = rgbImg * 255
+            rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
+        elif isinstance(Gamma, list):
+            for i in range(3):
+                rgbImg[:, :, i] = np.power(rgbImg[:, :, i], Gamma[i])
+            rgbImg = rgbImg * 255
+            rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
 
     # Auto White Balance
     if WB is not None:
         rgbImg = WB.balanceWhite(rgbImg)
 
-    return rgbImg
+    return rgbImg.astype(np.uint8)
 
 
 # LUT GENERATOR
@@ -168,7 +249,6 @@ class SWCameraGui(QtWidgets.QWidget):
         self.initCam()
         self.initConstants()
         # self.showMaximized()
-        # self.initThreads()
         self.initProcessing()
         self.show()
 
@@ -182,29 +262,18 @@ class SWCameraGui(QtWidgets.QWidget):
 
     def initAcquisitionThread(self):
         # Acquisition Thread
-        self.acquisitionThread = QtCore.QThread()
         self.grabber = FrameGrabber(self.ia)
-        self.grabber.moveToThread(self.acquisitionThread)
-        self.grabber.imageReady.connect(self.clbkProcessImage)
         self.grabber.imageReady.connect(self.saveImgThread)
+        self.grabber.imageReady.connect(self.clbkProcessImage)
         self.grabber.imageReady.connect(self.updateHistogram)
-        self.acquisitionThread.started.connect(self.grabber.run)
-        self.acquisitionThread.start()
 
     def initImageProcessThread(self):
-        self.imageProcessThread = QtCore.QThread()
         self.imageProcess = ImageProcess()
-        self.imageProcess.moveToThread(self.imageProcessThread)
-        self.imageProcess.qImageReady.connect(self.drawQimg)
-        # self.imageProcess.imageReady.connect(self.updateHistogram)
-        self.imageProcessThread.started.connect(self.imageProcess.run)
+        # self.imageProcess.qImageReady.connect(self.drawQimg)
+        self.imageProcess.imageReady.connect(self.drawImg)
 
-        self.histogramProcessThread = QtCore.QThread()
         self.histogramProcess = HistogramProcess()
-        self.histogramProcess.moveToThread(self.histogramProcessThread)
-        # self.histogramProcess.setPlottingWidget(self.histographPlot)
         self.histogramProcess.dataReady.connect(self.updateHistogramWidget)
-        self.histogramProcessThread.started.connect(self.histogramProcess.run)
 
     def initUI(self):
         # main layout
@@ -275,6 +344,34 @@ class SWCameraGui(QtWidgets.QWidget):
         self.mode.currentTextChanged.connect(self.clbkModeChange)
         self.controlLayout.addWidget(self.mode, i.postinc(), 1)
 
+        # RGB controls (preview)
+        _rgbLabel = QtWidgets.QLabel("RGB Preview Controls :")
+        self.controlLayout.addWidget(_rgbLabel, i.postinc(), 0)
+        self.redGamma = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.redGamma.setMinimum(1)
+        self.redGamma.setMaximum(100)
+        self.redGamma.setValue(100)
+        self.redGamma.valueChanged.connect(self.updateGamma)
+        self.controlLayout.addWidget(self.redGamma, i.val(), 1)
+        self.redGammaLabel = QtWidgets.QLabel()
+        self.controlLayout.addWidget(self.redGammaLabel, i.postinc(), 0)
+        self.greenGamma = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.greenGamma.setMinimum(1)
+        self.greenGamma.setMaximum(100)
+        self.greenGamma.setValue(100)
+        self.greenGamma.valueChanged.connect(self.updateGamma)
+        self.controlLayout.addWidget(self.greenGamma, i.val(), 1)
+        self.greenGammaLabel = QtWidgets.QLabel()
+        self.controlLayout.addWidget(self.greenGammaLabel, i.postinc(), 0)
+        self.blueGamma = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.blueGamma.setMinimum(1)
+        self.blueGamma.setMaximum(100)
+        self.blueGamma.setValue(100)
+        self.blueGamma.valueChanged.connect(self.updateGamma)
+        self.controlLayout.addWidget(self.blueGamma, i.val(), 1)
+        self.blueGammaLabel = QtWidgets.QLabel()
+        self.controlLayout.addWidget(self.blueGammaLabel, i.postinc(), 0)
+
         self.rightLayout.addLayout(self.controlLayout)
 
         self.histogram = pyqtgraph.GraphicsLayoutWidget()
@@ -328,12 +425,11 @@ class SWCameraGui(QtWidgets.QWidget):
 
     def clbkProcessImage(self, binImage):
         self.imageProcess.setImg(binImage)
-        self.imageProcessThread.start()
+        self.imageProcess.process()
 
-    def updateHistogram(self, rgbImage):
-        # too slow for real time ? put in thread ?
-        self.histogramProcess.setImg(rgbImage)
-        self.histogramProcessThread.start()
+    def updateHistogram(self, binImage):
+        self.histogramProcess.setImg(binImage)
+        self.histogramProcess.process()  # TODO REACTIVATE
 
     def updateHistogramWidget(self, dataList):
         x, y = dataList
@@ -393,13 +489,12 @@ class SWCameraGui(QtWidgets.QWidget):
         else:
             self.ia.start_acquisition()
             self.initAcquisitionThread()
-            self.acquisitionThread.start()
+            self.grabber.process()
             self.initImageProcessThread()
             self.imageProcess.setLUT(self.LUT)
-            self.imageProcessThread.start()
             self.runButton.setText("Stop")
             self.recordButton.setEnabled(True)
-            self.histogramProcessThread.start()
+            self.updateGamma()
 
     def saveImgThread(self, binImage):
         if self.recordButton.isChecked():
@@ -487,6 +582,15 @@ class SWCameraGui(QtWidgets.QWidget):
         self.mode.clear()
         for mode in self.ia.remote_device.node_map.VideoMode.symbolics:
             self.mode.addItem(mode)
+
+    def updateGamma(self):
+        redGamma = self.redGamma.value() / 100
+        self.redGammaLabel.setText("R : " + str(redGamma))
+        greenGamma = self.greenGamma.value() / 100
+        self.greenGammaLabel.setText("R : " + str(greenGamma))
+        blueGamma = self.blueGamma.value() / 100
+        self.blueGammaLabel.setText("R : " + str(blueGamma))
+        self.imageProcess.setGamma(redGamma, greenGamma, blueGamma)
 
 
 def SWCamera():
