@@ -124,6 +124,60 @@ class HistogramProcess(QtCore.QThread):
             raise(e)
 
 
+class VectorScopeProcess(QtCore.QThread):
+    def __init__(self, parent=None):
+        super(VectorScopeProcess, self).__init__(parent)
+        self.mutex = QtCore.QMutex()
+        self.condition = QtCore.QWaitCondition()
+
+        # self.plotWidget = None
+        self.image = None
+
+    dataReady = QtCore.Signal(list)
+    finished = QtCore.Signal()
+    DECIMATION_FACTOR = 9
+
+    # def setPlottingWidget(self, plotWidget):
+    #     self.plotWidget = plotWidget
+
+    def stop(self):
+        self.mutex.lock()
+        self.abort = True
+        self.condition.wakeOne()
+        self.mutex.unlock()
+
+    def setImg(self, image):
+        self.mutex.lock()
+        self.image = image
+        self.mutex.unlock()
+
+    def process(self):
+        try:
+            if not self.isRunning():
+                self.start(QtCore.QThread.LowPriority)
+            else:
+                self.restart = True
+                self.condition.wakeOne()
+        except Exception as e:
+            raise(e)
+
+    def run(self):
+        try:
+            if self.image is not None:
+                rgbImg = cv2.cvtColor(np.uint16(self.image), cv2.COLOR_BayerRG2RGB_EA)
+                yCrCbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_RGB2YCrCb)
+                crData = 2**12 / 2 - yCrCbImg[1, :, :].flatten()[::self.DECIMATION_FACTOR]
+                cbData = yCrCbImg[2, :, :].flatten()[::self.DECIMATION_FACTOR]
+                data = [{'pos': [crData[i], cbData[i]]} for i in range(len(crData))]
+                self.dataReady.emit(data)
+            else:
+                print(f"{self} got {self.image} image to process")
+            self.finished.emit()
+
+        except Exception as e:
+            raise(e)
+
+
 class ImageProcess(QtCore.QThread):
     def __init__(self, parent=None):
         super(ImageProcess, self).__init__(parent)
@@ -131,7 +185,7 @@ class ImageProcess(QtCore.QThread):
         self.condition = QtCore.QWaitCondition()
 
         self.LUT = None
-        self.Gamma = None
+        self.gain = None
         self.binImage = None
         # self.WB = cv2.xphoto.createSimpleWB()
         # self.WB = cv2.xphoto.createGrayworldWB()
@@ -151,9 +205,9 @@ class ImageProcess(QtCore.QThread):
         self.LUT = LUT
         self.mutex.unlock()
 
-    def setGamma(self, redGamma, greenGamma, blueGamma):
+    def setGamma(self, redGain, greenGain, blueGain):
         self.mutex.lock()
-        self.Gamma = [redGamma, greenGamma, blueGamma]
+        self.gain = [redGain, greenGain, blueGain]
         self.mutex.unlock()
 
     def setImg(self, binImage):
@@ -174,7 +228,7 @@ class ImageProcess(QtCore.QThread):
     def run(self):
         try:
             if self.binImage is not None:
-                rgbImg = processImg(self.binImage, Gamma=None, LUT=self.LUT)
+                rgbImg = processImg(self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
                 self.imageReady.emit(rgbImg)
                 qImg = QtGui.QImage(
                     rgbImg.data,
@@ -192,7 +246,7 @@ class ImageProcess(QtCore.QThread):
             raise(e)
 
 
-def processImg(rgbImg, LUT=None, CLAHE=None, Gamma=None, WB=None):
+def processImg(rgbImg, LUT=None, CLAHE=None, Gain: list = None, Gamma: float = None, WB=None):
 
     rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
 
@@ -207,6 +261,10 @@ def processImg(rgbImg, LUT=None, CLAHE=None, Gamma=None, WB=None):
         rgbImg = cv2.convertScaleAbs(rgbImg, alpha=1/8)
         rgbImg = cv2.LUT(rgbImg, LUT)
 
+    if Gain is not None:
+        for i, colorGain in enumerate(Gain):
+            rgbImg[:, :, i] = rgbImg[:, :, i] * colorGain
+
     if Gamma is not None:
         # Gamma Luma METHOD NOT WORKING
         # rgbImg = rgbImg.astype(np.float32)
@@ -220,15 +278,9 @@ def processImg(rgbImg, LUT=None, CLAHE=None, Gamma=None, WB=None):
 
         # # Gamma RGB METHOD SLOW
         rgbImg = rgbImg.astype(np.float32) / np.max(rgbImg)
-        if isinstance(Gamma, float):
-            rgbImg = np.power(rgbImg, Gamma)
-            rgbImg = rgbImg * 255
-            rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
-        elif isinstance(Gamma, list):
-            for i in range(3):
-                rgbImg[:, :, i] = np.power(rgbImg[:, :, i], Gamma[i])
-            rgbImg = rgbImg * 255
-            rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
+        rgbImg = np.power(rgbImg, Gamma)
+        rgbImg = rgbImg * 255
+        rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
 
     # Auto White Balance
     if WB is not None:
@@ -266,6 +318,7 @@ class SWCameraGui(QtWidgets.QWidget):
         self.grabber.imageReady.connect(self.saveImgThread)
         self.grabber.imageReady.connect(self.clbkProcessImage)
         self.grabber.imageReady.connect(self.updateHistogram)
+        self.grabber.imageReady.connect(self.updateVectorScope)
 
     def initImageProcessThread(self):
         self.imageProcess = ImageProcess()
@@ -274,6 +327,9 @@ class SWCameraGui(QtWidgets.QWidget):
 
         self.histogramProcess = HistogramProcess()
         self.histogramProcess.dataReady.connect(self.updateHistogramWidget)
+
+        self.vectorScopeProcess = VectorScopeProcess()
+        self.vectorScopeProcess.dataReady.connect(self.updateVectorScopeWidget)
 
     def initUI(self):
         # main layout
@@ -347,38 +403,46 @@ class SWCameraGui(QtWidgets.QWidget):
         # RGB controls (preview)
         _rgbLabel = QtWidgets.QLabel("RGB Preview Controls :")
         self.controlLayout.addWidget(_rgbLabel, i.postinc(), 0)
-        self.redGamma = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.redGamma.setMinimum(1)
-        self.redGamma.setMaximum(100)
-        self.redGamma.setValue(100)
-        self.redGamma.valueChanged.connect(self.updateGamma)
-        self.controlLayout.addWidget(self.redGamma, i.val(), 1)
+        self.redGain = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.redGain.setMinimum(0)
+        self.redGain.setMaximum(100)
+        self.redGain.setValue(100)
+        self.redGain.valueChanged.connect(self.updateRGBGain)
+        self.controlLayout.addWidget(self.redGain, i.val(), 1)
         self.redGammaLabel = QtWidgets.QLabel()
         self.controlLayout.addWidget(self.redGammaLabel, i.postinc(), 0)
         self.greenGamma = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.greenGamma.setMinimum(1)
+        self.greenGamma.setMinimum(0)
         self.greenGamma.setMaximum(100)
         self.greenGamma.setValue(100)
-        self.greenGamma.valueChanged.connect(self.updateGamma)
+        self.greenGamma.valueChanged.connect(self.updateRGBGain)
         self.controlLayout.addWidget(self.greenGamma, i.val(), 1)
         self.greenGammaLabel = QtWidgets.QLabel()
         self.controlLayout.addWidget(self.greenGammaLabel, i.postinc(), 0)
-        self.blueGamma = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.blueGamma.setMinimum(1)
-        self.blueGamma.setMaximum(100)
-        self.blueGamma.setValue(100)
-        self.blueGamma.valueChanged.connect(self.updateGamma)
-        self.controlLayout.addWidget(self.blueGamma, i.val(), 1)
+        self.blueGain = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.blueGain.setMinimum(0)
+        self.blueGain.setMaximum(100)
+        self.blueGain.setValue(100)
+        self.blueGain.valueChanged.connect(self.updateRGBGain)
+        self.controlLayout.addWidget(self.blueGain, i.val(), 1)
         self.blueGammaLabel = QtWidgets.QLabel()
         self.controlLayout.addWidget(self.blueGammaLabel, i.postinc(), 0)
 
         self.rightLayout.addLayout(self.controlLayout)
 
+        # Histogram
         self.histogram = pyqtgraph.GraphicsLayoutWidget()
         self.histographPlot = self.histogram.addPlot()
-        self.histogram.setMaximumSize(320, 120)
+        # self.histogram.setMaximumSize(320, 120)
         # self.histographPlot.setLogMode(False, True)
         self.rightLayout.addWidget(self.histogram)
+
+        # Vectorscope
+        self.vectorScope = pyqtgraph.PlotWidget()
+        self.scatterPlot = pyqtgraph.ScatterPlotItem()
+        self.vectorScopePlot = self.vectorScope.addItem(self.scatterPlot)
+        # self.vectorScope.setMaximumSize(320, 320)
+        self.rightLayout.addWidget(self.vectorScope)
 
         self.mainLayout.addLayout(self.rightLayout)
 
@@ -429,7 +493,7 @@ class SWCameraGui(QtWidgets.QWidget):
 
     def updateHistogram(self, binImage):
         self.histogramProcess.setImg(binImage)
-        self.histogramProcess.process()  # TODO REACTIVATE
+        self.histogramProcess.process()
 
     def updateHistogramWidget(self, dataList):
         x, y = dataList
@@ -439,6 +503,13 @@ class SWCameraGui(QtWidgets.QWidget):
         self.histographPlot.plot(x, yG1, stepMode=True, pen=(0, 255, 0))
         self.histographPlot.plot(x, yG2, stepMode=True, pen=(0, 255, 0))
         self.histographPlot.plot(x, yB, stepMode=True, pen=(0, 0, 255))
+
+    def updateVectorScope(self, binImage):
+        self.vectorScopeProcess.setImg(binImage)
+        self.vectorScopeProcess.process()
+
+    def updateVectorScopeWidget(self, data):
+        self.scatterPlot.setData(data)
 
     # ------ CALBACKS ------
 
@@ -494,7 +565,7 @@ class SWCameraGui(QtWidgets.QWidget):
             self.imageProcess.setLUT(self.LUT)
             self.runButton.setText("Stop")
             self.recordButton.setEnabled(True)
-            self.updateGamma()
+            self.updateRGBGain()
 
     def saveImgThread(self, binImage):
         if self.recordButton.isChecked():
@@ -583,14 +654,14 @@ class SWCameraGui(QtWidgets.QWidget):
         for mode in self.ia.remote_device.node_map.VideoMode.symbolics:
             self.mode.addItem(mode)
 
-    def updateGamma(self):
-        redGamma = self.redGamma.value() / 100
-        self.redGammaLabel.setText("R : " + str(redGamma))
-        greenGamma = self.greenGamma.value() / 100
-        self.greenGammaLabel.setText("R : " + str(greenGamma))
-        blueGamma = self.blueGamma.value() / 100
-        self.blueGammaLabel.setText("R : " + str(blueGamma))
-        self.imageProcess.setGamma(redGamma, greenGamma, blueGamma)
+    def updateRGBGain(self):
+        redGain = self.redGain.value() / 100
+        self.redGammaLabel.setText("R : " + str(redGain))
+        greenGain = self.greenGamma.value() / 100
+        self.greenGammaLabel.setText("G : " + str(greenGain))
+        blueGain = self.blueGain.value() / 100
+        self.blueGammaLabel.setText("B : " + str(blueGain))
+        self.imageProcess.setGamma(redGain, greenGain, blueGain)
 
 
 def SWCamera():
