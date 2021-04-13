@@ -1,6 +1,6 @@
 import sys
 import os
-from PySide2 import QtWidgets, QtGui, QtOpenGL, QtCore  # noqa F401
+from PySide2 import QtWidgets, QtGui, QtCore
 from harvesters.core import Harvester
 from harvesters.core import TimeoutException
 import logging
@@ -16,6 +16,7 @@ import pyqtgraph
 import utils
 import config
 import imageIO
+import plotting
 
 
 class FrameGrabber(QtCore.QThread):
@@ -133,12 +134,8 @@ class VectorScopeProcess(QtCore.QThread):
         # self.plotWidget = None
         self.image = None
 
-    dataReady = QtCore.Signal(list)
+    dataReady = QtCore.Signal(np.ndarray)
     finished = QtCore.Signal()
-    DECIMATION_FACTOR = 9
-
-    # def setPlottingWidget(self, plotWidget):
-    #     self.plotWidget = plotWidget
 
     def stop(self):
         self.mutex.lock()
@@ -154,7 +151,7 @@ class VectorScopeProcess(QtCore.QThread):
     def process(self):
         try:
             if not self.isRunning():
-                self.start(QtCore.QThread.LowPriority)
+                self.start(QtCore.QThread.NormalPriority)
             else:
                 self.restart = True
                 self.condition.wakeOne()
@@ -164,12 +161,12 @@ class VectorScopeProcess(QtCore.QThread):
     def run(self):
         try:
             if self.image is not None:
-                rgbImg = cv2.cvtColor(np.uint16(self.image), cv2.COLOR_BayerRG2RGB_EA)
-                yCrCbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_RGB2YCrCb)
-                crData = 2**12 / 2 - yCrCbImg[1, :, :].flatten()[::self.DECIMATION_FACTOR]
-                cbData = yCrCbImg[2, :, :].flatten()[::self.DECIMATION_FACTOR]
-                data = [{'pos': [crData[i], cbData[i]]} for i in range(len(crData))]
-                self.dataReady.emit(data)
+                rgbImg = cv2.cvtColor(self.image, cv2.COLOR_BayerRG2RGB)
+                rgbImg = cv2.resize(
+                    rgbImg, (int(rgbImg.shape[1] * 0.5), int(rgbImg.shape[0] * 0.5)), interpolation=cv2.INTER_LINEAR)
+                cbData, crData, colors = plotting.extractCbCrData(rgbImg)
+                # FIXME
+                self.dataReady.emit(plotImg)
             else:
                 print(f"{self} got {self.image} image to process")
             self.finished.emit()
@@ -438,11 +435,13 @@ class SWCameraGui(QtWidgets.QWidget):
         self.rightLayout.addWidget(self.histogram)
 
         # Vectorscope
-        self.vectorScope = pyqtgraph.PlotWidget()
-        self.scatterPlot = pyqtgraph.ScatterPlotItem()
-        self.vectorScopePlot = self.vectorScope.addItem(self.scatterPlot)
-        # self.vectorScope.setMaximumSize(320, 320)
-        self.rightLayout.addWidget(self.vectorScope)
+        # self.vectorScope = pyqtgraph.PlotWidget()
+        # self.scatterPlot = pyqtgraph.ScatterPlotItem()
+        # self.vectorScopePlot = self.vectorScope.addItem(self.scatterPlot)
+        # self.rightLayout.addWidget(self.vectorScope)
+        # self.vectorScope = plotting.MplCanvas()
+        # self.rightLayout.addWidget(self.vectorScope)
+        self.vectorScopeViewer = utils.QtImageViewer()
 
         self.mainLayout.addLayout(self.rightLayout)
 
@@ -508,8 +507,15 @@ class SWCameraGui(QtWidgets.QWidget):
         self.vectorScopeProcess.setImg(binImage)
         self.vectorScopeProcess.process()
 
-    def updateVectorScopeWidget(self, data):
-        self.scatterPlot.setData(data)
+    def updateVectorScopeWidget(self, plotImg):
+        qImg = QtGui.QImage(
+            plotImg.data,
+            plotImg.shape[1],
+            plotImg.shape[0],
+            plotImg.shape[1] * plotImg.shape[2],
+            QtGui.QImage.Format_RGB888
+        )
+        self.vectorScopeViewer.setImage(qImg.rgbSwapped())
 
     # ------ CALBACKS ------
 
