@@ -134,7 +134,7 @@ class VectorScopeProcess(QtCore.QThread):
         # self.plotWidget = None
         self.image = None
 
-    dataReady = QtCore.Signal(np.ndarray)
+    dataReady = QtCore.Signal(list)
     finished = QtCore.Signal()
 
     def stop(self):
@@ -163,10 +163,9 @@ class VectorScopeProcess(QtCore.QThread):
             if self.image is not None:
                 rgbImg = cv2.cvtColor(self.image, cv2.COLOR_BayerRG2RGB)
                 rgbImg = cv2.resize(
-                    rgbImg, (int(rgbImg.shape[1] * 0.5), int(rgbImg.shape[0] * 0.5)), interpolation=cv2.INTER_LINEAR)
+                    rgbImg, (int(rgbImg.shape[1] * 0.1), int(rgbImg.shape[0] * 0.1)), interpolation=cv2.INTER_AREA)
                 cbData, crData, colors = plotting.extractCbCrData(rgbImg)
-                # FIXME
-                self.dataReady.emit(plotImg)
+                self.dataReady.emit([cbData, crData, colors])
             else:
                 print(f"{self} got {self.image} image to process")
             self.finished.emit()
@@ -435,13 +434,17 @@ class SWCameraGui(QtWidgets.QWidget):
         self.rightLayout.addWidget(self.histogram)
 
         # Vectorscope
-        # self.vectorScope = pyqtgraph.PlotWidget()
-        # self.scatterPlot = pyqtgraph.ScatterPlotItem()
-        # self.vectorScopePlot = self.vectorScope.addItem(self.scatterPlot)
-        # self.rightLayout.addWidget(self.vectorScope)
+        self.vectorScope = pyqtgraph.PlotWidget()
+        self.vectorScope.disableAutoRange(True)
+        self.vectorScope.setXRange(0, 1)
+        self.vectorScope.setYRange(0, 1)
+        self.rightLayout.addWidget(self.vectorScope)
+        self.vectorScopePlot = pyqtgraph.ScatterPlotItem(pen=pyqtgraph.mkPen(None))
+        self.vectorScope.addItem(self.vectorScopePlot)
+
         # self.vectorScope = plotting.MplCanvas()
         # self.rightLayout.addWidget(self.vectorScope)
-        self.vectorScopeViewer = utils.QtImageViewer()
+        # self.vectorScopeViewer = utils.QtImageViewer()
 
         self.mainLayout.addLayout(self.rightLayout)
 
@@ -504,18 +507,14 @@ class SWCameraGui(QtWidgets.QWidget):
         self.histographPlot.plot(x, yB, stepMode=True, pen=(0, 0, 255))
 
     def updateVectorScope(self, binImage):
-        self.vectorScopeProcess.setImg(binImage)
-        self.vectorScopeProcess.process()
+        if not self.vectorScopeProcess.isRunning():
+            self.vectorScopeProcess.setImg(binImage)
+            self.vectorScopeProcess.process()
 
-    def updateVectorScopeWidget(self, plotImg):
-        qImg = QtGui.QImage(
-            plotImg.data,
-            plotImg.shape[1],
-            plotImg.shape[0],
-            plotImg.shape[1] * plotImg.shape[2],
-            QtGui.QImage.Format_RGB888
-        )
-        self.vectorScopeViewer.setImage(qImg.rgbSwapped())
+    def updateVectorScopeWidget(self, vectorScopeData):
+        cbData, crData, colors = vectorScopeData
+        # Too slow
+        plotting.pyqtVectorScope(cbData, crData, colors, self.vectorScopePlot)
 
     # ------ CALBACKS ------
 

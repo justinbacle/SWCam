@@ -1,9 +1,9 @@
 import cv2
-from cv2 import data
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.backends.backend_agg
 import pyqtgraph as pg
+from PySide2 import QtGui
 
 plt.style.use('dark_background')
 
@@ -89,38 +89,27 @@ def vectorscope(cbData, crData, colors):
     return plotImage
 
 
-def pyqtVectorScope(cbData, crData, color, scatterPlotItem):
-    scatterPlotItem.clear()
-
+def pyqtVectorScope(cbData, crData, colors, scatterPlotItem):
     spots = [
         {
             "pos": [cbData[i], crData[i]],
             "data": 1,
-            "size": 4,
+            "size": 1,
             "brush": tuple(colors[i] * 255)
         }
         for i in range(len(cbData))]
-
-    scatterPlotItem.addPoints(spots, pxMode=True)
-
-
-def removeDuplicates(l):
-    b = []
-    for i in range(0, len(l)):
-        if l[i] not in l[i+1:]:
-            b.append(l[i])
-    return b
+    scatterPlotItem.setData(
+        spots, pxMode=True, compositionMode=QtGui.QPainter.CompositionMode_SoftLight, _callSync='off')
 
 
 if __name__ == "__main__":
 
-    from PySide2 import QtGui
     app = pg.mkQApp("Scatter Plot Item Example")
     mw = QtGui.QMainWindow()
     view = pg.GraphicsLayoutWidget()  # GraphicsView with GraphicsLayout inserted by default
     mw.setCentralWidget(view)
     mw.show()
-    mw.setWindowTitle('pyqtgraph example: ScatterPlot')
+    mw.setWindowTitle('Vectorscope')
     w1 = view.addPlot()
     w1.setXRange(0, 1)
     w1.setYRange(0, 1)
@@ -129,7 +118,7 @@ if __name__ == "__main__":
 
     img = cv2.imread("C:/Users/justi/OneDrive/Images/Xbox Screenshots/03-02-2018_22-33-56.png")
     rgbImg = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    rgbImg = cv2.resize(rgbImg, (320, 240), cv2.INTER_AREA)
+    rgbImg = cv2.resize(rgbImg, (160, 90), cv2.INTER_AREA)
     cbData, crData, colors = extractCbCrData(rgbImg)
     pyqtVectorScope(cbData, crData, colors, s1)
 
