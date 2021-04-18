@@ -13,6 +13,7 @@ import threading
 import tqdm
 import pyqtgraph
 import vispy
+import numba
 
 import utils
 import config
@@ -20,8 +21,8 @@ import imageIO
 import plotting
 
 
-HISTOGRAM = False
-VECTORSCOPE = False
+HISTOGRAM = True
+VECTORSCOPE = True
 
 
 class FrameGrabber(QtCore.QThread):
@@ -66,6 +67,7 @@ class FrameGrabber(QtCore.QThread):
                 logging.error("Timeout error")
             except Exception as e:
                 print(e)
+        print("Ending Acquisition")
         self.mutex.unlock()
 
 
@@ -80,7 +82,8 @@ class HistogramProcess(QtCore.QThread):
 
     dataReady = QtCore.Signal(list)
     finished = QtCore.Signal()
-    NUM_BINS = 2**8
+    NUM_BINS = 2**10
+    bins = np.linspace(int(0), np.log(2**12), NUM_BINS)
 
     # def setPlottingWidget(self, plotWidget):
     #     self.plotWidget = plotWidget
@@ -109,22 +112,7 @@ class HistogramProcess(QtCore.QThread):
     def run(self):
         try:
             if self.image is not None:
-                yR, x = np.histogram(
-                    np.log(self.image[0::2, :].flatten()[0::2]),
-                    bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
-                )
-                yG1, x = np.histogram(
-                    np.log(self.image[0::2, :].flatten()[1::2]),
-                    bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
-                )
-                yG2, x = np.histogram(
-                    np.log(self.image[1::2, :].flatten()[0::2]),
-                    bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
-                )
-                yB, x = np.histogram(
-                    np.log(self.image[1::2, :].flatten()[1::2]),
-                    bins=np.linspace(0, np.log(2**12), num=self.NUM_BINS)
-                )
+                x, [yR, yG1, yG2, yR] = prepareHistogramData(self.image, self.bins)
                 self.dataReady.emit([x, [yR, yG1, yG2, yR]])
                 self.image = None
             else:
@@ -173,12 +161,12 @@ class VectorScopeProcess(QtCore.QThread):
             if self.image is not None:
                 rgbImg = cv2.cvtColor(self.image, cv2.COLOR_BayerRG2RGB)
                 rgbImg = cv2.resize(
-                    rgbImg, (int(rgbImg.shape[1] * 0.05), int(rgbImg.shape[0] * 0.05)), interpolation=cv2.INTER_AREA)
+                    rgbImg, (int(rgbImg.shape[1] * 0.1), int(rgbImg.shape[0] * 0.1)), interpolation=cv2.INTER_AREA)
                 cbData, crData, colors = plotting.extractCbCrData(rgbImg)
                 pos = np.transpose(np.vstack(
                     (
-                        cbData,
-                        crData,
+                        cbData-0.5,
+                        crData-0.5,
                         np.zeros_like(cbData)
                     )
                 ))
@@ -220,7 +208,8 @@ class ImageProcess(QtCore.QThread):
 
     def setGamma(self, redGain, greenGain, blueGain):
         self.mutex.lock()
-        self.gain = [redGain, greenGain, blueGain]
+        # reverse order for some reason
+        self.gain = [blueGain, greenGain, redGain]
         self.mutex.unlock()
 
     def setImg(self, binImage):
@@ -243,20 +232,39 @@ class ImageProcess(QtCore.QThread):
             if self.binImage is not None:
                 rgbImg = processImg(self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
                 self.imageReady.emit(rgbImg)
-                qImg = QtGui.QImage(
-                    rgbImg.data,
-                    rgbImg.shape[1],
-                    rgbImg.shape[0],
-                    rgbImg.shape[1] * rgbImg.shape[2],
-                    QtGui.QImage.Format_RGB888
-                )
-                self.qImageReady.emit(qImg)
+                # qImg = QtGui.QImage(
+                #     rgbImg.data,
+                #     rgbImg.shape[1],
+                #     rgbImg.shape[0],
+                #     rgbImg.shape[1] * rgbImg.shape[2],
+                #     QtGui.QImage.Format_RGB888
+                # )
+                # self.qImageReady.emit(qImg)
             else:
                 print(f"{self} got {self.binImage} image to process")
-            # fails here ? is okay if a raise  happens
             self.finished.emit()
         except Exception as e:
             raise(e)
+
+
+def prepareHistogramData(image, bins):
+    yR, x = np.histogram(
+        np.log(image[0::2, :].flatten()[0::2]),
+        bins=bins
+    )
+    yG1, x = np.histogram(
+        np.log(image[0::2, :].flatten()[1::2]),
+        bins=bins
+    )
+    yG2, x = np.histogram(
+        np.log(image[1::2, :].flatten()[0::2]),
+        bins=bins
+    )
+    yB, x = np.histogram(
+        np.log(image[1::2, :].flatten()[1::2]),
+        bins=bins
+    )
+    return x, [yR, yG1, yG2, yR]
 
 
 def processImg(rgbImg, LUT=None, CLAHE=None, Gain: list = None, Gamma: float = None, WB=None):
@@ -338,6 +346,8 @@ class SWCameraGui(QtWidgets.QWidget):
     def initImageProcessThread(self):
         self.imageProcess = ImageProcess()
         self.imageProcess.imageReady.connect(self.drawImg)
+        # if VECTORSCOPE:
+        #     self.imageProcess.imageReady.connect(self.updateVectorScope)
 
         if HISTOGRAM:
             self.histogramProcess = HistogramProcess()
@@ -467,8 +477,8 @@ class SWCameraGui(QtWidgets.QWidget):
         view.camera = 'turntable'
         view.camera.fov = 0
         view.camera.set_range(
-            x=(0, 1),
-            y=(0, 1),
+            x=(-5, 5),
+            y=(-5, 5),
             margin=0.0
         )
         view.camera.interactive = False
@@ -505,7 +515,9 @@ class SWCameraGui(QtWidgets.QWidget):
     # ----- Closing events -----
 
     def closeEvent(self, event):
-        # stop all threads ?
+
+        # stop all threads
+
         try:
             self.imageProcess.quit()
             self.imageProcess.wait()
@@ -530,6 +542,11 @@ class SWCameraGui(QtWidgets.QWidget):
         except AttributeError:
             ...
 
+        try:
+            vispy.app.quit()
+        except Exception as e:
+            logging.error(e)
+
     # ------ Image processing ------
 
     def drawImg(self, image: np.ndarray):
@@ -546,7 +563,7 @@ class SWCameraGui(QtWidgets.QWidget):
         self.imageViewer.setImage(qImg.rgbSwapped())
 
     def clbkProcessImage(self, binImage):
-        self.imageProcess.setImg(binImage)
+        self.imageProcess.setImg(np.copy(binImage))
         self.imageProcess.process()
 
     def updateHistogram(self, binImage):
@@ -570,7 +587,7 @@ class SWCameraGui(QtWidgets.QWidget):
     def updateVectorScopeWidget(self, vectorScopeData):
         pos, colors = vectorScopeData
         self.vectorScopePlot.set_data(
-            pos, face_color=colors, symbol='o', size=2,
+            pos * 20, face_color=colors, symbol='o', size=2,
             edge_width=0, edge_color=None, scaling=False
         )
 
@@ -734,7 +751,8 @@ class SWCameraGui(QtWidgets.QWidget):
 def SWCamera():
     app = QtWidgets.QApplication(sys.argv)
     _gui = SWCameraGui()  # noqa F841
-    vispy.app.run()
+    if VECTORSCOPE:
+        vispy.app.run()
 
     sys.exit(app.exec_())
 

@@ -131,8 +131,8 @@ def vispyVectorScope_test(cbData, crData, colors):
     view.camera = 'turntable'
     view.camera.fov = 0
     view.camera.set_range(
-        x=(0, 1),
-        y=(0, 1),
+        x=(-5, 5),
+        y=(-5, 5),
         margin=0.0
     )
     view.camera.interactive = False
@@ -143,13 +143,13 @@ def vispyVectorScope_test(cbData, crData, colors):
 
     pos = np.transpose(np.vstack(
         (
-            cbData,
-            crData,
+            cbData-0.5,
+            crData-0.5,
             np.zeros_like(cbData)
         )
     ))
 
-    p1.set_data(pos, face_color=colors, symbol='o', size=2,
+    p1.set_data(pos * 20, face_color=colors, symbol='o', size=2,
                 edge_width=0, edge_color=None, scaling=False)
 
 
@@ -157,7 +157,7 @@ if __name__ == "__main__":
 
     img = cv2.imread("C:/Users/justi/OneDrive/Images/Xbox Screenshots/03-02-2018_22-33-56.png")
     rgbImg = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    rgbImg = cv2.resize(rgbImg, (960, 540), cv2.INTER_AREA)
+    # rgbImg = cv2.resize(rgbImg, (960, 540), cv2.INTER_AREA)
     cbData, crData, colors = extractCbCrData(rgbImg)
 
     # pyqtVectorScope_test(cbData, crData, colors)
