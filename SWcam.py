@@ -6,14 +6,12 @@ from harvesters.core import TimeoutException
 import logging
 import cv2
 import numpy as np
-import math  # noqa F401
 import datetime
 import pathlib
 import threading
 import tqdm
 import pyqtgraph
 import vispy
-import numba
 
 import utils
 import config
