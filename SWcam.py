@@ -12,6 +12,7 @@ import threading
 import tqdm
 import pyqtgraph
 import vispy
+import vispy.scene
 
 import utils
 import config
