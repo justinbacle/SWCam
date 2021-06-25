@@ -43,12 +43,3 @@ def createVectorscopeImg(cb, cr, colors, width=360, height=360):
     vectorscopeImg = np.log(vectorscopeImg)
     vectorscopeImg = vectorscopeImg/np.max(vectorscopeImg) * 255
     return vectorscopeImg.astype(np.uint8)
-
-
-if __name__ == '__main__':
-    img = cv2.imread("C:/Users/justi/OneDrive/Images/Xbox Screenshots/03-02-2018_22-33-56.png")
-    rgbImg = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    cb, cr, colors = extractCbCrData(rgbImg)
-    vectorscopeImg = createVectorscopeImg(cb, cr, colors)
-    cv2.imshow('img', vectorscopeImg)
-    cv2.waitKey(0)

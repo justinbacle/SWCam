@@ -18,6 +18,7 @@ import utils
 import config
 import imageIO
 import plotting
+import vectorscope
 
 
 HISTOGRAM = True
@@ -161,7 +162,7 @@ class VectorScopeProcess(QtCore.QThread):
                 rgbImg = cv2.cvtColor(self.image, cv2.COLOR_BayerRG2RGB)
                 rgbImg = cv2.resize(
                     rgbImg, (int(rgbImg.shape[1] * 0.1), int(rgbImg.shape[0] * 0.1)), interpolation=cv2.INTER_AREA)
-                cbData, crData, colors = plotting.extractCbCrData(rgbImg)
+                cbData, crData, colors = vectorscope.extractCbCrData(rgbImg)
                 pos = np.transpose(np.vstack(
                     (
                         cbData-0.5,
