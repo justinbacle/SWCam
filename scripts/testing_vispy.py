@@ -1,6 +1,7 @@
 import numpy as np
 import vispy
 import vispy.scene.visuals
+import cv2
 
 
 def pcd_vispy(img=None, name=None, vis_size=(800, 600)):
@@ -15,6 +16,7 @@ def pcd_vispy(img=None, name=None, vis_size=(800, 600)):
     view.camera = 'panzoom'
     view.camera.flip = (False, True)
     view.camera.aspect = 1.0
+    view.camera.rotation = 90
     # view.camera.set_range((0, 800), (0, 600))
     view.camera.set_range()
     view.camera.fov = 0
@@ -23,7 +25,9 @@ def pcd_vispy(img=None, name=None, vis_size=(800, 600)):
 
 
 def update_image():
-    image = np.random.randint(0, 255, (HEIGHT, WIDTH, 3), dtype=np.uint8)
+    # image = np.random.randint(0, 255, (HEIGHT, WIDTH, 3), dtype=np.uint8)
+    image = cv2.imread("/home/jjj/Pictures/harvesters.jpg")
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     photo.set_data(image)
     photo.update()
     canvas.update()

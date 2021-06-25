@@ -17,12 +17,14 @@ import vispy.scene
 import utils
 import config
 import imageIO
-import plotting
 import vectorscope
 
 
-HISTOGRAM = True
-VECTORSCOPE = True
+HISTOGRAM = False
+VECTORSCOPE = False
+
+# IMAGE_DRAW_METHOD = "QtImageViewer"
+IMAGE_DRAW_METHOD = "Vispy"
 
 
 class FrameGrabber(QtCore.QThread):
@@ -208,8 +210,11 @@ class ImageProcess(QtCore.QThread):
 
     def setGamma(self, redGain, greenGain, blueGain):
         self.mutex.lock()
-        # reverse order for some reason
-        self.gain = [blueGain, greenGain, redGain]
+        if IMAGE_DRAW_METHOD == "QtImageViewer":
+            # reverse order for some reason
+            self.gain = [blueGain, greenGain, redGain]
+        else:
+            self.gain = [redGain, greenGain, blueGain]
         self.mutex.unlock()
 
     def setImg(self, binImage):
@@ -362,9 +367,22 @@ class SWCameraGui(QtWidgets.QWidget):
         self.setLayout(self.mainLayout)
 
         # image preview
-        self.imageViewer = utils.QtImageViewer()
-        self.imageViewer.setMinimumSize(960, 600)
-        self.mainLayout.addWidget(self.imageViewer)
+        if IMAGE_DRAW_METHOD == "QtImageViewer":
+            self.imageViewer = utils.QtImageViewer()
+            self.imageViewer.setMinimumSize(960, 600)
+            self.mainLayout.addWidget(self.imageViewer)
+        elif IMAGE_DRAW_METHOD == "Vispy":
+            self.imageViewerCanvas = vispy.scene.SceneCanvas(title="Preview", show=True)
+            self.imageViewerCanvas.show()
+            self.imageViewer = self.imageViewerCanvas.central_widget.add_view()
+            self.imageViewerPhoto = vispy.scene.visuals.Image(data=np.ndarray((1200, 1920, 3), dtype=np.uint8), parent=self.imageViewer.scene, method='auto', interpolation="catrom")
+            self.imageViewer.camera = 'panzoom'
+            self.imageViewer.camera.flip = (False, True)
+            self.imageViewer.camera.aspect = 1.0
+            self.imageViewer.camera.rotation = 90
+            # self.imageViewer.camera.set_range((0, 800), (0, 600))
+            self.imageViewer.camera.set_range()
+            self.imageViewer.camera.fov = 0
 
         # Right Panel
 
@@ -550,17 +568,22 @@ class SWCameraGui(QtWidgets.QWidget):
     # ------ Image processing ------
 
     def drawImg(self, image: np.ndarray):
-        qImg = QtGui.QImage(
-            image.data,
-            image.shape[1],
-            image.shape[0],
-            image.shape[1] * image.shape[2],
-            QtGui.QImage.Format_RGB888
-        )
-        self.imageViewer.setImage(qImg.rgbSwapped())
+        if IMAGE_DRAW_METHOD == "QtImageViewer":
+            qImg = QtGui.QImage(
+                image.data,
+                image.shape[1],
+                image.shape[0],
+                image.shape[1] * image.shape[2],
+                QtGui.QImage.Format_RGB888
+            )
+            self.imageViewer.setImage(qImg.rgbSwapped())
+        elif IMAGE_DRAW_METHOD == "Vispy":
+            self.imageViewerPhoto.set_data(image)
+            self.imageViewerPhoto.update()
+            self.imageViewerCanvas.update()
 
-    def drawQimg(self, qImg: QtGui.QImage):
-        self.imageViewer.setImage(qImg.rgbSwapped())
+    # def drawQimg(self, qImg: QtGui.QImage):
+    #     self.imageViewer.setImage(qImg.rgbSwapped())
 
     def clbkProcessImage(self, binImage):
         self.imageProcess.setImg(np.copy(binImage))
