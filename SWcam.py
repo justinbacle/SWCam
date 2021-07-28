@@ -21,7 +21,7 @@ import vectorscope
 
 
 HISTOGRAM = False
-VECTORSCOPE = False
+VECTORSCOPE = True
 
 # IMAGE_DRAW_METHOD = "QtImageViewer"
 IMAGE_DRAW_METHOD = "Vispy"
@@ -236,6 +236,7 @@ class ImageProcess(QtCore.QThread):
         try:
             if self.binImage is not None:
                 rgbImg = processImg(self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
+                rgbImg = cv2.cvtColor(rgbImg, cv2.COLOR_BGR2RGB)  # swapped image ?
                 self.imageReady.emit(rgbImg)
                 # qImg = QtGui.QImage(
                 #     rgbImg.data,
@@ -375,7 +376,13 @@ class SWCameraGui(QtWidgets.QWidget):
             self.imageViewerCanvas = vispy.scene.SceneCanvas(title="Preview", show=True)
             self.imageViewerCanvas.show()
             self.imageViewer = self.imageViewerCanvas.central_widget.add_view()
-            self.imageViewerPhoto = vispy.scene.visuals.Image(data=np.ndarray((1200, 1920, 3), dtype=np.uint8), parent=self.imageViewer.scene, method='auto', interpolation="catrom")
+            self.imageViewerPhoto = vispy.scene.visuals.Image(
+                data=np.ndarray((1200, 1920, 3), dtype=np.uint8),  # TODO replace with some wisely chosen constant
+                parent=self.imageViewer.scene,
+                method='auto',
+                # interpolation="catrom",
+                interpolation="bilinear",
+            )
             self.imageViewer.camera = 'panzoom'
             self.imageViewer.camera.flip = (False, True)
             self.imageViewer.camera.aspect = 1.0
@@ -383,6 +390,7 @@ class SWCameraGui(QtWidgets.QWidget):
             # self.imageViewer.camera.set_range((0, 800), (0, 600))
             self.imageViewer.camera.set_range()
             self.imageViewer.camera.fov = 0
+            self.mainLayout.addWidget(self.imageViewerCanvas.native)
 
         # Right Panel
 
