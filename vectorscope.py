@@ -42,4 +42,8 @@ def createVectorscopeImg(cb, cr, colors, width=360, height=360):
         vectorscopeImg[int(cb[i]*width), int(cr[i]*height), :] += colors[i]/10
     vectorscopeImg = np.log(vectorscopeImg)
     vectorscopeImg = vectorscopeImg/np.max(vectorscopeImg) * 255
+
+    # add decoration
+    cv2.line(vectorscopeImg,)
+
     return vectorscopeImg.astype(np.uint8)
