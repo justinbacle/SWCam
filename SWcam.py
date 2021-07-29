@@ -240,10 +240,15 @@ class ImageProcess(QtCore.QThread):
     def run(self):
         try:
             if self.binImage is not None:
-                rgbImg = processImg(
-                    self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
                 # rgbImg = processImg(
-                #     self.binImage, colorMatrix=color_correct.COLOR_MATRIX["CIE-D50"], Gain=self.gain)
+                #     self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
+                rgbImg = processImg(
+                    self.binImage,
+                    colorMatrix=color_correct.COLOR_MATRIX["BFLY-U3-23S6C"],
+                    LUT=self.LUT,
+                    # Gain=color_correct.WB_Scale["CIE-D50"],
+                    Gain=self.gain,
+                )
                 self.imageReady.emit(rgbImg)
                 # qImg = QtGui.QImage(
                 #     rgbImg.data,
@@ -290,19 +295,18 @@ def processImg(rgbImg, LUT=None, CLAHE=None, colorMatrix=None, Gain: list = None
             rgbImg[i] = CLAHE.apply(rgbImg[i])
         rgbImg = cv2.convertScaleAbs(rgbImg)
 
+    if colorMatrix is not None:
+        rgbImg = color_correct.RGBraw2sRGB(rgbImg, colorMatrix)
+
+    if Gain is not None:
+        Gain = np.array(Gain) / max(Gain)
+        for i, colorGain in enumerate(Gain):
+            rgbImg[:, :, i] = rgbImg[:, :, i] * colorGain
+
     # 8-Bit LUT METHOD FAST, noisy  <-- works
     if LUT is not None:
         rgbImg = cv2.convertScaleAbs(rgbImg, alpha=1/8)
         rgbImg = cv2.LUT(rgbImg, LUT)
-
-    if colorMatrix is not None:
-        rgb_reshaped = rgbImg.reshape((rgbImg.shape[0] * rgbImg.shape[1], rgbImg.shape[2]))
-        # TODO fix data type
-        rgbImg = np.dot(colorMatrix, rgb_reshaped.T).T.reshape(rgbImg.shape)
-
-    if Gain is not None:
-        for i, colorGain in enumerate(Gain):
-            rgbImg[:, :, i] = rgbImg[:, :, i] * colorGain
 
     if Gamma is not None:
         # Gamma Luma METHOD NOT WORKING
