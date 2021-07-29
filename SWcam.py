@@ -18,6 +18,7 @@ import utils
 import config
 import imageIO
 import vectorscope
+import color_correct
 
 
 HISTOGRAM = False
@@ -161,7 +162,11 @@ class VectorScopeProcess(QtCore.QThread):
     def run(self):
         try:
             if self.image is not None:
-                rgbImg = cv2.cvtColor(self.image, cv2.COLOR_BayerRG2RGB)
+
+                # rgbImg = cv2.cvtColor(self.image, cv2.COLOR_BayerRG2RGB)
+                # TODO check properly if image is bayer or rgb
+                rgbImg = self.image
+
                 rgbImg = cv2.resize(
                     rgbImg, (int(rgbImg.shape[1] * 0.1), int(rgbImg.shape[0] * 0.1)), interpolation=cv2.INTER_AREA)
                 cbData, crData, colors = vectorscope.extractCbCrData(rgbImg)
@@ -235,8 +240,10 @@ class ImageProcess(QtCore.QThread):
     def run(self):
         try:
             if self.binImage is not None:
-                rgbImg = processImg(self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
-                rgbImg = cv2.cvtColor(rgbImg, cv2.COLOR_BGR2RGB)  # swapped image ?
+                rgbImg = processImg(
+                    self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
+                # rgbImg = processImg(
+                #     self.binImage, colorMatrix=color_correct.COLOR_MATRIX["CIE-D50"], Gain=self.gain)
                 self.imageReady.emit(rgbImg)
                 # qImg = QtGui.QImage(
                 #     rgbImg.data,
@@ -273,9 +280,9 @@ def prepareHistogramData(image, bins):
     return x, [yR, yG1, yG2, yR]
 
 
-def processImg(rgbImg, LUT=None, CLAHE=None, Gain: list = None, Gamma: float = None, WB=None):
+def processImg(rgbImg, LUT=None, CLAHE=None, colorMatrix=None, Gain: list = None, Gamma: float = None, WB=None):
 
-    rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
+    rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2BGR_EA)  # should be RGB instead of BGR
 
     # CLAHE METHOD
     if CLAHE is not None:
@@ -287,6 +294,11 @@ def processImg(rgbImg, LUT=None, CLAHE=None, Gain: list = None, Gamma: float = N
     if LUT is not None:
         rgbImg = cv2.convertScaleAbs(rgbImg, alpha=1/8)
         rgbImg = cv2.LUT(rgbImg, LUT)
+
+    if colorMatrix is not None:
+        rgb_reshaped = rgbImg.reshape((rgbImg.shape[0] * rgbImg.shape[1], rgbImg.shape[2]))
+        # TODO fix data type
+        rgbImg = np.dot(colorMatrix, rgb_reshaped.T).T.reshape(rgbImg.shape)
 
     if Gain is not None:
         for i, colorGain in enumerate(Gain):
@@ -346,14 +358,14 @@ class SWCameraGui(QtWidgets.QWidget):
         self.grabber.imageReady.connect(self.clbkProcessImage)
         if HISTOGRAM:
             self.grabber.imageReady.connect(self.updateHistogram)
-        if VECTORSCOPE:
-            self.grabber.imageReady.connect(self.updateVectorScope)
+        # if VECTORSCOPE:
+        #     self.grabber.imageReady.connect(self.updateVectorScope)
 
     def initImageProcessThread(self):
         self.imageProcess = ImageProcess()
         self.imageProcess.imageReady.connect(self.drawImg)
-        # if VECTORSCOPE:
-        #     self.imageProcess.imageReady.connect(self.updateVectorScope)
+        if VECTORSCOPE:
+            self.imageProcess.imageReady.connect(self.updateVectorScope)
 
         if HISTOGRAM:
             self.histogramProcess = HistogramProcess()
@@ -491,7 +503,7 @@ class SWCameraGui(QtWidgets.QWidget):
 
         # vispy Vectorscope
         if VECTORSCOPE:
-            self.vectorScopeCanvas = vispy.scene.SceneCanvas()
+            self.vectorScopeCanvas = vispy.scene.SceneCanvas(size=(400, 400))
             self.rightLayout.addWidget(self.vectorScopeCanvas.native)
             self.initVectorScopeWidget()
 
@@ -511,6 +523,15 @@ class SWCameraGui(QtWidgets.QWidget):
         self.vectorScopePlot = Scatter3D(parent=view.scene)
         self.vectorScopePlot.set_gl_state('translucent', blend=True, depth_test=True)
         self.vectorScopePlot.antialias = 0
+
+        # TODO add overlay
+        # vispy.scene.visuals.Line(
+        #     pos=np.ndarray([
+        #         [0, 0], [0, 1]
+        #     ]),
+        #     color=(1, 1, 1),
+        #     parent=view.scene
+        # )
 
     def initResolutionSpinBoxes(self):
         self.horizontalResolution.setMaximum(1920)
@@ -586,6 +607,7 @@ class SWCameraGui(QtWidgets.QWidget):
             )
             self.imageViewer.setImage(qImg.rgbSwapped())
         elif IMAGE_DRAW_METHOD == "Vispy":
+            # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # swapped image ?
             self.imageViewerPhoto.set_data(image)
             self.imageViewerPhoto.update()
             self.imageViewerCanvas.update()
@@ -657,7 +679,9 @@ class SWCameraGui(QtWidgets.QWidget):
         self.gain.setValue(self.ia.remote_device.node_map.Gain.value)
         self.shutter.setValue(
             self.ia.remote_device.node_map.ExposureTime.value / 1e6 / (1 / self.framerate.value()) * 360)
-        # TODO for video mode
+        self.mode.setCurrentIndex(
+            self.mode.findData(self.ia.remote_device.node_map.VideoMode.value)
+        )
 
     def clbkUpdateUiLimits(self):
         self.horizontalResolution.setMaximum(self.ia.remote_device.node_map.WidthMax.value)
