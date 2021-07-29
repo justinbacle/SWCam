@@ -350,7 +350,10 @@ class SWCameraGui(QtWidgets.QWidget):
     # ------ INIT ------
 
     def initConstants(self):
-        self.OUTPUT_PATH = "D:/VideoOut"
+        if sys.platform == "win32":
+            self.OUTPUT_PATH = "D:/VideoOut"
+        elif sys.platform == "linux":
+            self.OUTPUT_PATH = "/media/jjj/7B2F-AED5/VideoOut"
         self.save_threads = []
         self.imageCount = utils.counter()
         self.savePath = None
