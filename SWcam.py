@@ -37,6 +37,7 @@ class FrameGrabber(QtCore.QThread):
         self.ia = ia
 
     imageReady = QtCore.Signal(np.ndarray)
+    rawImageReady = QtCore.Signal()
 
     def process(self):
         try:
@@ -64,6 +65,7 @@ class FrameGrabber(QtCore.QThread):
                 with self.ia.fetch_buffer(timeout=1) as buffer:
                     component = buffer.payload.components[0]
                     if component is not None:
+                        self.rawImageReady.emit(component.data)
                         binImage = component.data.reshape(component.height, component.width)
                         self.imageReady.emit(binImage)
             except TimeoutException:
@@ -361,8 +363,11 @@ class SWCameraGui(QtWidgets.QWidget):
     def initAcquisitionThread(self):
         # Acquisition Thread
         self.grabber = FrameGrabber(self.ia)
-        self.grabber.imageReady.connect(self.saveImgThread)
-        self.grabber.imageReady.connect(self.clbkProcessImage)
+        if sys.platform == "win32":
+            self.grabber.imageReady.connect(self.saveImgThread)
+            self.grabber.imageReady.connect(self.clbkProcessImage)
+        elif sys.platform == "linux":
+            self.grabber.rawImageReady.connect(self.saveRawImgThread)
         if HISTOGRAM:
             self.grabber.imageReady.connect(self.updateHistogram)
         # if VECTORSCOPE:
@@ -721,6 +726,19 @@ class SWCameraGui(QtWidgets.QWidget):
                     threading.Thread(
                         target=imageIO.saveTiffImg,
                         args=(binImage, f"{self.savePath}/IMG", self.imageCount.postinc())
+                    )
+                )
+                self.save_threads[-1].start()
+            else:
+                print('no savePath ?')
+
+    def saveRawImgThread(self, rawData):
+        if self.recordButton.isChecked():
+            if self.savePath is not None:
+                self.save_threads.append(
+                    threading.Thread(
+                        target=imageIO.saveRawImg,
+                        args=(rawData, f"{self.savePath}/IMG", self.imageCount.postinc())
                     )
                 )
                 self.save_threads[-1].start()

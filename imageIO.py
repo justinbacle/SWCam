@@ -17,6 +17,11 @@ def saveTiffImgAndConvertDNG(binImage, tiffImagePath, i):
         os.remove(tiffImgPath)
 
 
+def saveRawImg(rawData, basePath, i):
+    with open('{basePath}_{i}.raw', 'wb') as f_:
+        f_.write(rawData)
+
+
 def convertTiff2Dng(tiffImagePath):
     dngImgPath = tiffImagePath.replace('.tiff', '.dng')
     """usage: makeDNG input_tiff_file output_dng_file [cfa_pattern] [compression]
