@@ -3,6 +3,7 @@ import os
 from PySide2 import QtWidgets, QtGui, QtCore
 from harvesters.core import Harvester
 from harvesters.core import TimeoutException
+from harvesters.core import Buffer
 import logging
 import cv2
 import numpy as np
@@ -37,7 +38,7 @@ class FrameGrabber(QtCore.QThread):
         self.ia = ia
 
     imageReady = QtCore.Signal(np.ndarray)
-    rawImageReady = QtCore.Signal()
+    rawImageReady = QtCore.Signal(Buffer)
 
     def process(self):
         try:
@@ -65,7 +66,7 @@ class FrameGrabber(QtCore.QThread):
                 with self.ia.fetch_buffer(timeout=1) as buffer:
                     component = buffer.payload.components[0]
                     if component is not None:
-                        self.rawImageReady.emit(component.data)
+                        # self.rawImageReady.emit(buffer)
                         binImage = component.data.reshape(component.height, component.width)
                         self.imageReady.emit(binImage)
             except TimeoutException:
@@ -197,6 +198,7 @@ class ImageProcess(QtCore.QThread):
         self.LUT = None
         self.gain = None
         self.binImage = None
+        self.CCM = None
         # self.WB = cv2.xphoto.createSimpleWB()
         # self.WB = cv2.xphoto.createGrayworldWB()
 
@@ -229,6 +231,11 @@ class ImageProcess(QtCore.QThread):
         self.binImage = binImage
         self.mutex.unlock()
 
+    def setCCM(self, CCM: np.ndarray):
+        self.mutex.lock()
+        self.CCM = CCM
+        self.mutex.unlock()
+
     def process(self):
         try:
             if not self.isRunning():
@@ -246,7 +253,8 @@ class ImageProcess(QtCore.QThread):
                 #     self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
                 rgbImg = processImg(
                     self.binImage,
-                    colorMatrix=color_correct.COLOR_MATRIX["BFLY-U3-23S6C"],
+                    # colorMatrix=color_correct.COLOR_MATRIX["BFLY-U3-23S6C"],
+                    colorMatrix=self.CCM,
                     LUT=self.LUT,
                     # Gain=color_correct.WB_Scale["CIE-D50"],
                     Gain=self.gain,
@@ -397,7 +405,7 @@ class SWCameraGui(QtWidgets.QWidget):
             self.imageViewer.setMinimumSize(960, 600)
             self.mainLayout.addWidget(self.imageViewer)
         elif IMAGE_DRAW_METHOD == "Vispy":
-            self.imageViewerCanvas = vispy.scene.SceneCanvas(title="Preview", show=True)
+            self.imageViewerCanvas = vispy.scene.SceneCanvas(title="Preview", show=True, size=(1440, 900))
             self.imageViewerCanvas.show()
             self.imageViewer = self.imageViewerCanvas.central_widget.add_view()
             self.imageViewerPhoto = vispy.scene.visuals.Image(
@@ -405,7 +413,8 @@ class SWCameraGui(QtWidgets.QWidget):
                 parent=self.imageViewer.scene,
                 method='auto',
                 # interpolation="catrom",
-                interpolation="bilinear",
+                # interpolation="bilinear",
+                interpolation="nearest"
             )
             self.imageViewer.camera = 'panzoom'
             self.imageViewer.camera.flip = (False, True)
@@ -503,6 +512,18 @@ class SWCameraGui(QtWidgets.QWidget):
         self.blueGammaLabel = QtWidgets.QLabel()
         self.controlLayout.addWidget(self.blueGammaLabel, i.postinc(), 0)
 
+        # CCM
+        self.ccm = QtWidgets.QTableWidget()
+        self.ccm.setRowCount(3)
+        self.ccm.setColumnCount(3)
+        for j in range(3):
+            for k in range(3):
+                self.ccm.setItem(
+                    j, k,
+                    QtWidgets.QTableWidgetItem(str(color_correct.COLOR_MATRIX["BFLY-U3-23S6C"][j][k]))
+                )
+        self.controlLayout.addWidget(self.ccm, i.postinc(), 0, 1, 2)
+
         self.rightLayout.addLayout(self.controlLayout)
 
         # Histogram
@@ -571,6 +592,13 @@ class SWCameraGui(QtWidgets.QWidget):
             tileGridSize=(8, 8)
         )
 
+    def getCCM(self):
+        ccm = np.ndarray((3, 3))
+        for j in range(3):
+            for k in range(3):
+                ccm[j, k] = float(self.ccm.item(j, k).text())
+        return ccm
+
     # ----- Closing events -----
 
     def closeEvent(self, event):
@@ -630,6 +658,7 @@ class SWCameraGui(QtWidgets.QWidget):
     def clbkProcessImage(self, binImage):
         self.imageProcess.setImg(np.copy(binImage))
         self.imageProcess.process()
+        self.updateCCM()
 
     def updateHistogram(self, binImage):
         self.histogramProcess.setImg(binImage)
@@ -714,6 +743,7 @@ class SWCameraGui(QtWidgets.QWidget):
             self.grabber.process()
             self.initImageProcessThread()
             self.imageProcess.setLUT(self.LUT)
+            self.updateCCM()
             self.runButton.setText("Stop")
             self.recordButton.setEnabled(True)
             self.updateRGBGain()
@@ -826,6 +856,9 @@ class SWCameraGui(QtWidgets.QWidget):
         blueGain = self.blueGain.value() / 100
         self.blueGammaLabel.setText("B : " + str(blueGain))
         self.imageProcess.setGamma(redGain, greenGain, blueGain)
+
+    def updateCCM(self):
+        self.imageProcess.setCCM(self.getCCM())
 
 
 def SWCamera():
