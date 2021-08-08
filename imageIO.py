@@ -18,8 +18,10 @@ def saveTiffImgAndConvertDNG(binImage, tiffImagePath, i):
 
 
 def saveRawImg(rawData, basePath, i):
-    with open('{basePath}_{i}.raw', 'wb') as f_:
+    with open(f'{basePath}_{i}.raw', 'wb') as f_:
         f_.write(rawData)
+    print(f"Image saved -> {basePath}_{i}.raw")
+    return f"{basePath}_{i}.raw"
 
 
 def convertTiff2Dng(tiffImagePath):

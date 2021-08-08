@@ -28,6 +28,8 @@ VECTORSCOPE = True
 # IMAGE_DRAW_METHOD = "QtImageViewer"
 IMAGE_DRAW_METHOD = "Vispy"
 
+RAW = True
+
 
 class FrameGrabber(QtCore.QThread):
     def __init__(self, ia, parent=None):
@@ -66,7 +68,7 @@ class FrameGrabber(QtCore.QThread):
                 with self.ia.fetch_buffer(timeout=1) as buffer:
                     component = buffer.payload.components[0]
                     if component is not None:
-                        # self.rawImageReady.emit(buffer)
+                        self.rawImageReady.emit(buffer.payload._buffer.raw_buffer)
                         binImage = component.data.reshape(component.height, component.width)
                         self.imageReady.emit(binImage)
             except TimeoutException:
@@ -372,7 +374,10 @@ class SWCameraGui(QtWidgets.QWidget):
         # Acquisition Thread
         self.grabber = FrameGrabber(self.ia)
         if sys.platform == "win32":
-            self.grabber.imageReady.connect(self.saveImgThread)
+            if RAW:
+                self.grabber.rawImageReady.connect(self.saveRawImgThread)
+            else:
+                self.grabber.imageReady.connect(self.saveImgThread)
             self.grabber.imageReady.connect(self.clbkProcessImage)
         elif sys.platform == "linux":
             self.grabber.rawImageReady.connect(self.saveRawImgThread)
@@ -412,9 +417,9 @@ class SWCameraGui(QtWidgets.QWidget):
                 data=np.ndarray((1200, 1920, 3), dtype=np.uint8),  # TODO replace with some wisely chosen constant
                 parent=self.imageViewer.scene,
                 method='auto',
-                # interpolation="catrom",
+                interpolation="catrom",
                 # interpolation="bilinear",
-                interpolation="nearest"
+                # interpolation="nearest"
             )
             self.imageViewer.camera = 'panzoom'
             self.imageViewer.camera.flip = (False, True)
@@ -789,14 +794,18 @@ class SWCameraGui(QtWidgets.QWidget):
     def deferredTiffToDng(self, savePath):
         save_threads = []
         files = os.listdir(savePath)
-        for file in tqdm.tqdm(files):
-            save_threads.append(
-                threading.Thread(
-                    target=imageIO.convertTiff2DngAndClean,
-                    args=(str(pathlib.Path(savePath, file)),)
+        if RAW:
+            # TODO put raw to dng converter
+            ...
+        else:
+            for file in tqdm.tqdm(files):
+                save_threads.append(
+                    threading.Thread(
+                        target=imageIO.convertTiff2DngAndClean,
+                        args=(str(pathlib.Path(savePath, file)),)
+                    )
                 )
-            )
-            save_threads[-1].start()
+                save_threads[-1].start()
 
     def clbkResolutionChange(self):
         try:

@@ -29,8 +29,8 @@ class Type:
     IFD = (13, 4)  # IFD (Same as Long)
 
 
-Types = [(getattr(Type, n), n)
-         for n in dir(Type) if n != "__doc__" and n != "__module__"]
+Types = [
+    (getattr(Type, n), n) for n in dir(Type) if "__" not in n]
 Types.sort()
 
 
@@ -150,7 +150,7 @@ class Tag:
     NewRawImageDigest = (51111, Type.Byte)
 
 
-IfdNames = [n for n in dir(Tag) if n != "__doc__" and n != "__module__"]
+IfdNames = [n for n in dir(Tag) if "__" not in n]
 IfdValues = [getattr(Tag, n) for n in IfdNames]
 IfdIdentifiers = [getattr(Tag, n)[0] for n in IfdNames]
 IfdTypes = [getattr(Tag, n)[1][0] for n in IfdNames]
@@ -206,19 +206,18 @@ class dngTag(object):
             self.Value = struct.pack('<%sd' % len(value), *value)
         elif self.DataType == Type.Rational:
             # ... This... uhm... flattens the list of two value pairs
-            self.Value = struct.pack(
-                '<%sL' % (len(value)*2), *[item for sublist in value for item in sublist])
+            self.Value = struct.pack('<%sL' % (len(value)*2), *[item for sublist in value for item in sublist])
         elif self.DataType == Type.Srational:
-            self.Value = struct.pack(
-                '<%sl' % (len(value)*2), *[item for sublist in value for item in sublist])
+            self.Value = struct.pack('<%sl' % (len(value)*2), *[item for sublist in value for item in sublist])
         elif self.DataType == Type.Ascii:
-            self.Value = struct.pack('<%scx0L' % len(value), *value)
+            # self.Value = struct.pack('<%scx0L' % len(value), *value)
+            value = bytes(value, 'utf-8')
+            self.Value = struct.pack('<%ssx0L' % len(value), value)
             self.DataCount += 1
         elif self.DataType == Type.IFD:
-            self.Value = "\x00\x00\x00\x00"
+            self.Value = b"\x00\x00\x00\x00"
             self.subIFD = value[0]
-        self.Value += '\x00' * \
-            (((len(self.Value)+3) & 0xFFFFFFFC) - len(self.Value))
+        self.Value += b'\x00' * (((len(self.Value)+3) & 0xFFFFFFFC) - len(self.Value))
 
     def setBuffer(self, buf, tagOffset, dataOffset):
         self.buf = buf
@@ -241,7 +240,7 @@ class dngTag(object):
             raise RuntimeError("buffer not initialized")
 
         # if not self.subIFD:
-        #    print "Tag: %04X - 0x%08X, 0x%08X - %-30s %s" % (self.TagId, self.TagOffset, self.DataOffset, IfdLookup.get(self.TagId,"Unknown"), self.Value.encode('hex'))
+        #    print "Tag: %04X - 0x%08X, 0x%08X - %-30s %s" % (self.TagId, self.TagOffset, self.DataOffset, IfdLookup.get(self.TagId,"Unknown"), self.Value.encode('hex'))  # noqa E501
 
         if self.subIFD:
             self.subIFD.write()
@@ -275,7 +274,7 @@ class dngIFD(object):
             tag.setBuffer(buf, currentTagOffset, currentDataOffset)
             currentTagOffset += 12
             currentDataOffset += tag.dataLen()
-            #currentDataOffset = (currentDataOffset + 3) & 0xFFFFFFFC
+            # currentDataOffset = (currentDataOffset + 3) & 0xFFFFFFFC
 
     def dataLen(self):
         totalLength = 2 + len(self.tags)*12 + 4
@@ -389,7 +388,7 @@ def readFrame(file, width, length, bpp):
 
             return frame
 
-    except:
+    except IndexError:
         return None
 
 
@@ -399,13 +398,13 @@ def convertVideo(inputFilename, outputFilenameFormat, width, length, colour, bpp
     creationTime = creation_date(inputFilename)
     creationTimeString = time.strftime("%x %X", time.localtime(creationTime))
 
-    # https://stackoverflow.com/questions/12517451/automatically-creating-directories-with-file-output
-    if not os.path.exists(os.path.dirname(outputFilenameFormat % (0))):
-        try:
-            os.makedirs(os.path.dirname(outputFilenameFormat % (0)))
-        except OSError as exc:  # Guard against race condition
-            if exc.errno != errno.EEXIST:
-                raise
+    # # https://stackoverflow.com/questions/12517451/automatically-creating-directories-with-file-output
+    # if not os.path.exists(os.path.dirname(outputFilenameFormat % (0))):
+    #     try:
+    #         os.makedirs(os.path.dirname(outputFilenameFormat % (0)))
+    #     except OSError as exc:  # Guard against race condition
+    #         if exc.errno != errno.EEXIST:
+    #             raise
 
     # set up the image binary data
     rawFile = open(inputFilename, "rb")
@@ -446,10 +445,11 @@ def convertVideo(inputFilename, outputFilenameFormat, width, length, colour, bpp
     mainIFD.tags.append(dngTag(Tag.DNGVersion, [1, 1, 0, 0]))
     mainIFD.tags.append(dngTag(Tag.DNGBackwardVersion, [1, 0, 0, 0]))
     mainIFD.tags.append(dngTag(Tag.UniqueCameraModel, "Krontech Chronos 1.4"))
-    mainIFD.tags.append(dngTag(Tag.ColorMatrix1, [[15407, 10000], [-3218, 10000], [-1652, 10000],  # CIECAM16 color matrix for LUX1310, D55 illuminant
-                                                  [-3799, 10000], [13260,
-                                                                   10000], [-408, 10000],
-                                                  [-3047, 10000], [6673, 10000], [6774, 10000]]))
+    mainIFD.tags.append(dngTag(Tag.ColorMatrix1, [
+        [15407, 10000], [-3218, 10000], [-1652, 10000],  # CIECAM16 color matrix for LUX1310, D55 illuminant
+        [-3799, 10000], [13260, 10000], [-408, 10000],
+        [-3047, 10000], [6673, 10000], [6774, 10000]
+    ]))
     mainIFD.tags.append(
         dngTag(Tag.AsShotNeutral, [[10000, 15150], [10000, 10000], [10000, 11048]]))
     mainIFD.tags.append(dngTag(Tag.CalibrationIlluminant1, [20]))
