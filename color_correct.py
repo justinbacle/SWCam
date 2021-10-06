@@ -48,6 +48,7 @@ TEST_COLOR_MATRIX = [
 
 @numba.njit()
 def applyColorMatrix(floatImgData, rgbConversionMatrix):
+    """ From https://stackoverflow.com/questions/22081423/apply-transformation-matrix-to-pixels-in-opencv-image """
     rgb_reshaped = floatImgData.reshape((floatImgData.shape[0] * floatImgData.shape[1], floatImgData.shape[2]))
     result = np.dot(rgbConversionMatrix, rgb_reshaped.T).T
     return result.reshape(floatImgData.shape)
