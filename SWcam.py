@@ -28,7 +28,7 @@ VECTORSCOPE = True
 # IMAGE_DRAW_METHOD = "QtImageViewer"
 IMAGE_DRAW_METHOD = "Vispy"
 
-RAW = True
+RAW = False
 
 
 class FrameGrabber(QtCore.QThread):
@@ -373,14 +373,11 @@ class SWCameraGui(QtWidgets.QWidget):
     def initAcquisitionThread(self):
         # Acquisition Thread
         self.grabber = FrameGrabber(self.ia)
-        if sys.platform == "win32":
-            if RAW:
-                self.grabber.rawImageReady.connect(self.saveRawImgThread)
-            else:
-                self.grabber.imageReady.connect(self.saveImgThread)
-            self.grabber.imageReady.connect(self.clbkProcessImage)
-        elif sys.platform == "linux":
+        if RAW:
             self.grabber.rawImageReady.connect(self.saveRawImgThread)
+        else:
+            self.grabber.imageReady.connect(self.saveImgThread)
+        self.grabber.imageReady.connect(self.clbkProcessImage)
         if HISTOGRAM:
             self.grabber.imageReady.connect(self.updateHistogram)
         # if VECTORSCOPE:
@@ -449,6 +446,9 @@ class SWCameraGui(QtWidgets.QWidget):
         self.recordButton.setStyleSheet("QPushButton:checked {background-color: red;}")  # Red means recording
         self.recordButton.toggled.connect(self.clbkRecord)
         self.controlLayout.addWidget(self.recordButton, i.postinc(), 0, 1, 2)
+        self.exitButton = QtWidgets.QPushButton("Exit")
+        self.exitButton.clicked.connect(self.exit)
+        self.controlLayout.addWidget(self.exitButton, i.postinc(), 0, 1, 2)
 
         _horizontalResolutionLabel = QtWidgets.QLabel("Horizontal Resolution :")
         self.controlLayout.addWidget(_horizontalResolutionLabel, i.val(), 0)
@@ -606,7 +606,11 @@ class SWCameraGui(QtWidgets.QWidget):
 
     # ----- Closing events -----
 
-    def closeEvent(self, event):
+    def exit(self):
+        self.closeEvent()
+        sys.exit()
+
+    def closeEvent(self):
 
         # stop all threads
 
