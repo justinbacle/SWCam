@@ -2,6 +2,7 @@ import os
 import cv2
 import subprocess
 import config
+import sys
 
 
 def saveTiffImg(image, basePath, i):
@@ -15,6 +16,13 @@ def saveTiffImgAndConvertDNG(binImage, tiffImagePath, i):
     dngImgPath, call = convertTiff2Dng(tiffImgPath)
     if call == 0:
         os.remove(tiffImgPath)
+
+
+def saveRawImg(rawData, basePath, i):
+    with open(f'{basePath}_{i}.raw', 'wb') as f_:
+        f_.write(rawData)
+    print(f"Image saved -> {basePath}_{i}.raw")
+    return f"{basePath}_{i}.raw"
 
 
 def convertTiff2Dng(tiffImagePath):
@@ -31,7 +39,11 @@ def convertTiff2Dng(tiffImagePath):
                    7: lossless JPEG -> 2335 kB
                    8: Adobe Deflate (16-bit float) -> Slow / ~2000 kB
     """
-    call = subprocess.call([config.MAKEDNG_PATH, tiffImagePath, dngImgPath, "3", "7"])
+    if sys.platform == "linux":
+        # Wine call, temporary fix for linux
+        call = subprocess.call(["wine", config.MAKEDNG_PATH, tiffImagePath, dngImgPath, "3", "7"])
+    else:
+        call = subprocess.call([config.MAKEDNG_PATH, tiffImagePath, dngImgPath, "3", "7"])
     return dngImgPath, call
 
 

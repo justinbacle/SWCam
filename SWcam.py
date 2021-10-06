@@ -3,6 +3,7 @@ import os
 from PySide2 import QtWidgets, QtGui, QtCore
 from harvesters.core import Harvester
 from harvesters.core import TimeoutException
+from harvesters.core import Buffer
 import logging
 import cv2
 import numpy as np
@@ -12,15 +13,22 @@ import threading
 import tqdm
 import pyqtgraph
 import vispy
+import vispy.scene
 
 import utils
 import config
 import imageIO
-import plotting
+import vectorscope
+import color_correct
 
 
-HISTOGRAM = True
+HISTOGRAM = False
 VECTORSCOPE = True
+
+# IMAGE_DRAW_METHOD = "QtImageViewer"
+IMAGE_DRAW_METHOD = "Vispy"
+
+RAW = True
 
 
 class FrameGrabber(QtCore.QThread):
@@ -32,6 +40,7 @@ class FrameGrabber(QtCore.QThread):
         self.ia = ia
 
     imageReady = QtCore.Signal(np.ndarray)
+    rawImageReady = QtCore.Signal(Buffer)
 
     def process(self):
         try:
@@ -59,6 +68,7 @@ class FrameGrabber(QtCore.QThread):
                 with self.ia.fetch_buffer(timeout=1) as buffer:
                     component = buffer.payload.components[0]
                     if component is not None:
+                        self.rawImageReady.emit(buffer.payload._buffer.raw_buffer)
                         binImage = component.data.reshape(component.height, component.width)
                         self.imageReady.emit(binImage)
             except TimeoutException:
@@ -157,10 +167,14 @@ class VectorScopeProcess(QtCore.QThread):
     def run(self):
         try:
             if self.image is not None:
-                rgbImg = cv2.cvtColor(self.image, cv2.COLOR_BayerRG2RGB)
+
+                # rgbImg = cv2.cvtColor(self.image, cv2.COLOR_BayerRG2RGB)
+                # TODO check properly if image is bayer or rgb
+                rgbImg = self.image
+
                 rgbImg = cv2.resize(
                     rgbImg, (int(rgbImg.shape[1] * 0.1), int(rgbImg.shape[0] * 0.1)), interpolation=cv2.INTER_AREA)
-                cbData, crData, colors = plotting.extractCbCrData(rgbImg)
+                cbData, crData, colors = vectorscope.extractCbCrData(rgbImg)
                 pos = np.transpose(np.vstack(
                     (
                         cbData-0.5,
@@ -186,6 +200,7 @@ class ImageProcess(QtCore.QThread):
         self.LUT = None
         self.gain = None
         self.binImage = None
+        self.CCM = None
         # self.WB = cv2.xphoto.createSimpleWB()
         # self.WB = cv2.xphoto.createGrayworldWB()
 
@@ -206,13 +221,21 @@ class ImageProcess(QtCore.QThread):
 
     def setGamma(self, redGain, greenGain, blueGain):
         self.mutex.lock()
-        # reverse order for some reason
-        self.gain = [blueGain, greenGain, redGain]
+        if IMAGE_DRAW_METHOD == "QtImageViewer":
+            # reverse order for some reason
+            self.gain = [blueGain, greenGain, redGain]
+        else:
+            self.gain = [redGain, greenGain, blueGain]
         self.mutex.unlock()
 
     def setImg(self, binImage):
         self.mutex.lock()
         self.binImage = binImage
+        self.mutex.unlock()
+
+    def setCCM(self, CCM: np.ndarray):
+        self.mutex.lock()
+        self.CCM = CCM
         self.mutex.unlock()
 
     def process(self):
@@ -228,7 +251,16 @@ class ImageProcess(QtCore.QThread):
     def run(self):
         try:
             if self.binImage is not None:
-                rgbImg = processImg(self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
+                # rgbImg = processImg(
+                #     self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
+                rgbImg = processImg(
+                    self.binImage,
+                    # colorMatrix=color_correct.COLOR_MATRIX["BFLY-U3-23S6C"],
+                    colorMatrix=self.CCM,
+                    LUT=self.LUT,
+                    # Gain=color_correct.WB_Scale["CIE-D50"],
+                    Gain=self.gain,
+                )
                 self.imageReady.emit(rgbImg)
                 # qImg = QtGui.QImage(
                 #     rgbImg.data,
@@ -265,9 +297,9 @@ def prepareHistogramData(image, bins):
     return x, [yR, yG1, yG2, yR]
 
 
-def processImg(rgbImg, LUT=None, CLAHE=None, Gain: list = None, Gamma: float = None, WB=None):
+def processImg(rgbImg, LUT=None, CLAHE=None, colorMatrix=None, Gain: list = None, Gamma: float = None, WB=None):
 
-    rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2RGB_EA)
+    rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2BGR_EA)  # should be RGB instead of BGR
 
     # CLAHE METHOD
     if CLAHE is not None:
@@ -275,14 +307,18 @@ def processImg(rgbImg, LUT=None, CLAHE=None, Gain: list = None, Gamma: float = N
             rgbImg[i] = CLAHE.apply(rgbImg[i])
         rgbImg = cv2.convertScaleAbs(rgbImg)
 
+    if colorMatrix is not None:
+        rgbImg = color_correct.RGBraw2sRGB(rgbImg, colorMatrix)
+
+    if Gain is not None:
+        Gain = np.array(Gain) / max(Gain)
+        for i, colorGain in enumerate(Gain):
+            rgbImg[:, :, i] = rgbImg[:, :, i] * colorGain
+
     # 8-Bit LUT METHOD FAST, noisy  <-- works
     if LUT is not None:
         rgbImg = cv2.convertScaleAbs(rgbImg, alpha=1/8)
         rgbImg = cv2.LUT(rgbImg, LUT)
-
-    if Gain is not None:
-        for i, colorGain in enumerate(Gain):
-            rgbImg[:, :, i] = rgbImg[:, :, i] * colorGain
 
     if Gamma is not None:
         # Gamma Luma METHOD NOT WORKING
@@ -326,7 +362,10 @@ class SWCameraGui(QtWidgets.QWidget):
     # ------ INIT ------
 
     def initConstants(self):
-        self.OUTPUT_PATH = "D:/VideoOut"
+        if sys.platform == "win32":
+            self.OUTPUT_PATH = "D:/VideoOut"
+        elif sys.platform == "linux":
+            self.OUTPUT_PATH = "/media/jjj/7B2F-AED5/VideoOut"
         self.save_threads = []
         self.imageCount = utils.counter()
         self.savePath = None
@@ -334,18 +373,24 @@ class SWCameraGui(QtWidgets.QWidget):
     def initAcquisitionThread(self):
         # Acquisition Thread
         self.grabber = FrameGrabber(self.ia)
-        self.grabber.imageReady.connect(self.saveImgThread)
-        self.grabber.imageReady.connect(self.clbkProcessImage)
+        if sys.platform == "win32":
+            if RAW:
+                self.grabber.rawImageReady.connect(self.saveRawImgThread)
+            else:
+                self.grabber.imageReady.connect(self.saveImgThread)
+            self.grabber.imageReady.connect(self.clbkProcessImage)
+        elif sys.platform == "linux":
+            self.grabber.rawImageReady.connect(self.saveRawImgThread)
         if HISTOGRAM:
             self.grabber.imageReady.connect(self.updateHistogram)
-        if VECTORSCOPE:
-            self.grabber.imageReady.connect(self.updateVectorScope)
+        # if VECTORSCOPE:
+        #     self.grabber.imageReady.connect(self.updateVectorScope)
 
     def initImageProcessThread(self):
         self.imageProcess = ImageProcess()
         self.imageProcess.imageReady.connect(self.drawImg)
-        # if VECTORSCOPE:
-        #     self.imageProcess.imageReady.connect(self.updateVectorScope)
+        if VECTORSCOPE:
+            self.imageProcess.imageReady.connect(self.updateVectorScope)
 
         if HISTOGRAM:
             self.histogramProcess = HistogramProcess()
@@ -360,9 +405,30 @@ class SWCameraGui(QtWidgets.QWidget):
         self.setLayout(self.mainLayout)
 
         # image preview
-        self.imageViewer = utils.QtImageViewer()
-        self.imageViewer.setMinimumSize(960, 600)
-        self.mainLayout.addWidget(self.imageViewer)
+        if IMAGE_DRAW_METHOD == "QtImageViewer":
+            self.imageViewer = utils.QtImageViewer()
+            self.imageViewer.setMinimumSize(960, 600)
+            self.mainLayout.addWidget(self.imageViewer)
+        elif IMAGE_DRAW_METHOD == "Vispy":
+            self.imageViewerCanvas = vispy.scene.SceneCanvas(title="Preview", show=True, size=(1440, 900))
+            self.imageViewerCanvas.show()
+            self.imageViewer = self.imageViewerCanvas.central_widget.add_view()
+            self.imageViewerPhoto = vispy.scene.visuals.Image(
+                data=np.ndarray((1200, 1920, 3), dtype=np.uint8),  # TODO replace with some wisely chosen constant
+                parent=self.imageViewer.scene,
+                method='auto',
+                interpolation="catrom",
+                # interpolation="bilinear",
+                # interpolation="nearest"
+            )
+            self.imageViewer.camera = 'panzoom'
+            self.imageViewer.camera.flip = (False, True)
+            self.imageViewer.camera.aspect = 1.0
+            self.imageViewer.camera.rotation = 90
+            # self.imageViewer.camera.set_range((0, 800), (0, 600))
+            self.imageViewer.camera.set_range()
+            self.imageViewer.camera.fov = 0
+            self.mainLayout.addWidget(self.imageViewerCanvas.native)
 
         # Right Panel
 
@@ -451,6 +517,18 @@ class SWCameraGui(QtWidgets.QWidget):
         self.blueGammaLabel = QtWidgets.QLabel()
         self.controlLayout.addWidget(self.blueGammaLabel, i.postinc(), 0)
 
+        # CCM
+        self.ccm = QtWidgets.QTableWidget()
+        self.ccm.setRowCount(3)
+        self.ccm.setColumnCount(3)
+        for j in range(3):
+            for k in range(3):
+                self.ccm.setItem(
+                    j, k,
+                    QtWidgets.QTableWidgetItem(str(color_correct.COLOR_MATRIX["BFLY-U3-23S6C"][j][k]))
+                )
+        self.controlLayout.addWidget(self.ccm, i.postinc(), 0, 1, 2)
+
         self.rightLayout.addLayout(self.controlLayout)
 
         # Histogram
@@ -463,7 +541,7 @@ class SWCameraGui(QtWidgets.QWidget):
 
         # vispy Vectorscope
         if VECTORSCOPE:
-            self.vectorScopeCanvas = vispy.scene.SceneCanvas()
+            self.vectorScopeCanvas = vispy.scene.SceneCanvas(size=(400, 400))
             self.rightLayout.addWidget(self.vectorScopeCanvas.native)
             self.initVectorScopeWidget()
 
@@ -483,6 +561,15 @@ class SWCameraGui(QtWidgets.QWidget):
         self.vectorScopePlot = Scatter3D(parent=view.scene)
         self.vectorScopePlot.set_gl_state('translucent', blend=True, depth_test=True)
         self.vectorScopePlot.antialias = 0
+
+        # TODO add overlay
+        # vispy.scene.visuals.Line(
+        #     pos=np.ndarray([
+        #         [0, 0], [0, 1]
+        #     ]),
+        #     color=(1, 1, 1),
+        #     parent=view.scene
+        # )
 
     def initResolutionSpinBoxes(self):
         self.horizontalResolution.setMaximum(1920)
@@ -509,6 +596,13 @@ class SWCameraGui(QtWidgets.QWidget):
             clipLimit=2.0,
             tileGridSize=(8, 8)
         )
+
+    def getCCM(self):
+        ccm = np.ndarray((3, 3))
+        for j in range(3):
+            for k in range(3):
+                ccm[j, k] = float(self.ccm.item(j, k).text())
+        return ccm
 
     # ----- Closing events -----
 
@@ -548,21 +642,28 @@ class SWCameraGui(QtWidgets.QWidget):
     # ------ Image processing ------
 
     def drawImg(self, image: np.ndarray):
-        qImg = QtGui.QImage(
-            image.data,
-            image.shape[1],
-            image.shape[0],
-            image.shape[1] * image.shape[2],
-            QtGui.QImage.Format_RGB888
-        )
-        self.imageViewer.setImage(qImg.rgbSwapped())
+        if IMAGE_DRAW_METHOD == "QtImageViewer":
+            qImg = QtGui.QImage(
+                image.data,
+                image.shape[1],
+                image.shape[0],
+                image.shape[1] * image.shape[2],
+                QtGui.QImage.Format_RGB888
+            )
+            self.imageViewer.setImage(qImg.rgbSwapped())
+        elif IMAGE_DRAW_METHOD == "Vispy":
+            # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # swapped image ?
+            self.imageViewerPhoto.set_data(image)
+            self.imageViewerPhoto.update()
+            self.imageViewerCanvas.update()
 
-    def drawQimg(self, qImg: QtGui.QImage):
-        self.imageViewer.setImage(qImg.rgbSwapped())
+    # def drawQimg(self, qImg: QtGui.QImage):
+    #     self.imageViewer.setImage(qImg.rgbSwapped())
 
     def clbkProcessImage(self, binImage):
         self.imageProcess.setImg(np.copy(binImage))
         self.imageProcess.process()
+        self.updateCCM()
 
     def updateHistogram(self, binImage):
         self.histogramProcess.setImg(binImage)
@@ -624,7 +725,9 @@ class SWCameraGui(QtWidgets.QWidget):
         self.gain.setValue(self.ia.remote_device.node_map.Gain.value)
         self.shutter.setValue(
             self.ia.remote_device.node_map.ExposureTime.value / 1e6 / (1 / self.framerate.value()) * 360)
-        # TODO for video mode
+        self.mode.setCurrentIndex(
+            self.mode.findData(self.ia.remote_device.node_map.VideoMode.value)
+        )
 
     def clbkUpdateUiLimits(self):
         self.horizontalResolution.setMaximum(self.ia.remote_device.node_map.WidthMax.value)
@@ -645,6 +748,7 @@ class SWCameraGui(QtWidgets.QWidget):
             self.grabber.process()
             self.initImageProcessThread()
             self.imageProcess.setLUT(self.LUT)
+            self.updateCCM()
             self.runButton.setText("Stop")
             self.recordButton.setEnabled(True)
             self.updateRGBGain()
@@ -657,6 +761,19 @@ class SWCameraGui(QtWidgets.QWidget):
                     threading.Thread(
                         target=imageIO.saveTiffImg,
                         args=(binImage, f"{self.savePath}/IMG", self.imageCount.postinc())
+                    )
+                )
+                self.save_threads[-1].start()
+            else:
+                print('no savePath ?')
+
+    def saveRawImgThread(self, rawData):
+        if self.recordButton.isChecked():
+            if self.savePath is not None:
+                self.save_threads.append(
+                    threading.Thread(
+                        target=imageIO.saveRawImg,
+                        args=(rawData, f"{self.savePath}/IMG", self.imageCount.postinc())
                     )
                 )
                 self.save_threads[-1].start()
@@ -677,14 +794,18 @@ class SWCameraGui(QtWidgets.QWidget):
     def deferredTiffToDng(self, savePath):
         save_threads = []
         files = os.listdir(savePath)
-        for file in tqdm.tqdm(files):
-            save_threads.append(
-                threading.Thread(
-                    target=imageIO.convertTiff2DngAndClean,
-                    args=(str(pathlib.Path(savePath, file)),)
+        if RAW:
+            # TODO put raw to dng converter
+            ...
+        else:
+            for file in tqdm.tqdm(files):
+                save_threads.append(
+                    threading.Thread(
+                        target=imageIO.convertTiff2DngAndClean,
+                        args=(str(pathlib.Path(savePath, file)),)
+                    )
                 )
-            )
-            save_threads[-1].start()
+                save_threads[-1].start()
 
     def clbkResolutionChange(self):
         try:
@@ -744,6 +865,9 @@ class SWCameraGui(QtWidgets.QWidget):
         blueGain = self.blueGain.value() / 100
         self.blueGammaLabel.setText("B : " + str(blueGain))
         self.imageProcess.setGamma(redGain, greenGain, blueGain)
+
+    def updateCCM(self):
+        self.imageProcess.setCCM(self.getCCM())
 
 
 def SWCamera():
