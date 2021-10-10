@@ -1,9 +1,7 @@
 import sys
 import os
-from PySide2 import QtWidgets, QtGui, QtCore
-from harvesters.core import Harvester
-from harvesters.core import TimeoutException
-from harvesters.core import Buffer
+from PySide6 import QtWidgets, QtGui, QtCore
+from harvesters.core import Harvester, Buffer, TimeoutException
 import logging
 import cv2
 import numpy as np
@@ -617,26 +615,26 @@ class SWCameraGui(QtWidgets.QWidget):
         try:
             self.imageProcess.quit()
             self.imageProcess.wait()
-        except AttributeError:
-            ...
+        except AttributeError as e:
+            logging.error(e)
 
         try:
             self.vectorScopeProcess.quit()
             self.vectorScopeProcess.wait()
-        except AttributeError:
-            ...
+        except AttributeError as e:
+            logging.error(e)
 
         try:
             self.imageProcess.quit()
             self.imageProcess.wait()
-        except AttributeError:
-            ...
+        except AttributeError as e:
+            logging.error(e)
 
         try:
             self.grabber.quit()
             self.grabber.wait()
-        except AttributeError:
-            ...
+        except AttributeError as e:
+            logging.error(e)
 
         try:
             vispy.app.quit()

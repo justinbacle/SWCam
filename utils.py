@@ -1,4 +1,4 @@
-from PySide2 import QtWidgets, QtGui, QtCore, QtOpenGL
+from PySide6 import QtWidgets, QtGui, QtCore, QtOpenGL
 import os
 
 

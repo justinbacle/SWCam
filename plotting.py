@@ -2,7 +2,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.backends.backend_agg
-from PySide2 import QtGui
+from PySide6 import QtGui
 
 plt.style.use('dark_background')
 

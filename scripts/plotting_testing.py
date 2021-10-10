@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import pyqtgraph as pg
-from PySide2 import QtGui
+from PySide6 import QtGui
 import vispy
 import vispy.scene
 import sys
