@@ -69,6 +69,7 @@ class FrameGrabber(QtCore.QThread):
                         self.rawImageReady.emit(buffer.payload._buffer.raw_buffer)
                         binImage = component.data.reshape(component.height, component.width)
                         self.imageReady.emit(binImage)
+                        buffer.queue()
             except TimeoutException:
                 logging.error("Timeout error")
             except Exception as e:
@@ -579,7 +580,7 @@ class SWCameraGui(QtWidgets.QWidget):
         self.harvester.update()
         # TODO handle multiple cameras with QComboBox ?
         try:
-            self.ia = self.harvester.create_image_acquirer(0)
+            self.ia = self.harvester.create(0)
         except IndexError:
             self.ia = None
             logging.error("No Camera Available")
@@ -608,10 +609,11 @@ class SWCameraGui(QtWidgets.QWidget):
         self.closeEvent()
         sys.exit()
 
-    def closeEvent(self):
+    def closeEvent(self, *args, **kwargs):
 
         # stop all threads
-
+        print(args)
+        print(kwargs)
         try:
             self.imageProcess.quit()
             self.imageProcess.wait()
