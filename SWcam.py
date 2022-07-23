@@ -20,7 +20,7 @@ import vectorscope
 import color_correct
 
 
-HISTOGRAM = False
+HISTOGRAM = True
 VECTORSCOPE = True
 
 # IMAGE_DRAW_METHOD = "QtImageViewer"
@@ -57,13 +57,13 @@ class FrameGrabber(QtCore.QThread):
             self.condition.wakeOne()
             self.mutex.unlock()
         except Exception as e:
-            print(e)
+            logging.error(e)
 
     def run(self):
         self.mutex.lock()
         while self.ia.is_acquiring():
             try:
-                with self.ia.fetch_buffer(timeout=1) as buffer:
+                with self.ia.fetch(timeout=1) as buffer:
                     component = buffer.payload.components[0]
                     if component is not None:
                         self.rawImageReady.emit(buffer.payload._buffer.raw_buffer)
@@ -73,8 +73,15 @@ class FrameGrabber(QtCore.QThread):
             except TimeoutException:
                 logging.error("Timeout error")
             except Exception as e:
-                print(e)
-        print("Ending Acquisition")
+                if "Insufficient amount of announced buffers to start acquisition." in str(e) \
+                        and sys.platform == "linux":
+                    logging.error(
+                        """It looks like usb buffer is restricted. Read here to fix it :
+                        https://www.ximea.com/support/wiki/apis/Linux_USB30_Support#Increase-the-USB-Buffer-Size-in-Linux
+                    """)
+                else:
+                    logging.error(e)
+        logging.info("Ending Acquisition")
         self.mutex.unlock()
 
 
@@ -119,11 +126,11 @@ class HistogramProcess(QtCore.QThread):
     def run(self):
         try:
             if self.image is not None:
-                x, [yR, yG1, yG2, yR] = prepareHistogramData(self.image, self.bins)
-                self.dataReady.emit([x, [yR, yG1, yG2, yR]])
+                x, [yR, yG1, yG2, yB] = prepareHistogramData(self.image, self.bins)
+                self.dataReady.emit([x, [yR, yG1, yG2, yB]])
                 self.image = None
             else:
-                print(f"{self} got {self.image} image to process")
+                logging.debug(f"{self} got {self.image} image to process")
             self.finished.emit()
 
         except Exception as e:
@@ -183,7 +190,7 @@ class VectorScopeProcess(QtCore.QThread):
                 ))
                 self.dataReady.emit([pos, colors])
             else:
-                print(f"{self} got {self.image} image to process")
+                logging.debug(f"{self} got {self.image} image to process")
             self.finished.emit()
 
         except Exception as e:
@@ -270,7 +277,7 @@ class ImageProcess(QtCore.QThread):
                 # )
                 # self.qImageReady.emit(qImg)
             else:
-                print(f"{self} got {self.binImage} image to process")
+                logging.debug(f"{self} got {self.binImage} image to process")
             self.finished.emit()
         except Exception as e:
             raise(e)
@@ -278,22 +285,14 @@ class ImageProcess(QtCore.QThread):
 
 def prepareHistogramData(image, bins):
     yR, x = np.histogram(
-        np.log(image[0::2, :].flatten()[0::2]),
-        bins=bins
-    )
+        np.log(image[0::2, :].flatten()[0::2]), bins=bins)
     yG1, x = np.histogram(
-        np.log(image[0::2, :].flatten()[1::2]),
-        bins=bins
-    )
+        np.log(image[0::2, :].flatten()[1::2]), bins=bins)
     yG2, x = np.histogram(
-        np.log(image[1::2, :].flatten()[0::2]),
-        bins=bins
-    )
+        np.log(image[1::2, :].flatten()[0::2]), bins=bins)
     yB, x = np.histogram(
-        np.log(image[1::2, :].flatten()[1::2]),
-        bins=bins
-    )
-    return x, [yR, yG1, yG2, yR]
+        np.log(image[1::2, :].flatten()[1::2]), bins=bins)
+    return x, [yR, yG1, yG2, yB]
 
 
 def processImg(rgbImg, LUT=None, CLAHE=None, colorMatrix=None, Gain: list = None, Gamma: float = None, WB=None):
@@ -364,7 +363,7 @@ class SWCameraGui(QtWidgets.QWidget):
         if sys.platform == "win32":
             self.OUTPUT_PATH = "D:/VideoOut"
         elif sys.platform == "linux":
-            self.OUTPUT_PATH = "/media/jjj/7B2F-AED5/VideoOut"
+            self.OUTPUT_PATH = "/home/jjj/Videos"
         self.save_threads = []
         self.imageCount = utils.counter()
         self.savePath = None
@@ -576,7 +575,14 @@ class SWCameraGui(QtWidgets.QWidget):
 
     def initCam(self):
         self.harvester = Harvester()
-        self.harvester.add_file(config.CTI_FILEPATH)
+
+        def checkCti(path=config.CTI_FILEPATH):
+            return pathlib.Path(path).exists()
+
+        if checkCti():
+            self.harvester.add_file(config.CTI_FILEPATH)
+        else:
+            logging.error(f"Could not find .cti file in path {config.CTI_FILEPATH}")
         self.harvester.update()
         # TODO handle multiple cameras with QComboBox ?
         try:
@@ -612,8 +618,6 @@ class SWCameraGui(QtWidgets.QWidget):
     def closeEvent(self, *args, **kwargs):
 
         # stop all threads
-        print(args)
-        print(kwargs)
         try:
             self.imageProcess.quit()
             self.imageProcess.wait()
@@ -647,6 +651,7 @@ class SWCameraGui(QtWidgets.QWidget):
 
     def drawImg(self, image: np.ndarray):
         if IMAGE_DRAW_METHOD == "QtImageViewer":
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # swapped channels in QT image display ?
             qImg = QtGui.QImage(
                 image.data,
                 image.shape[1],
@@ -656,7 +661,6 @@ class SWCameraGui(QtWidgets.QWidget):
             )
             self.imageViewer.setImage(qImg.rgbSwapped())
         elif IMAGE_DRAW_METHOD == "Vispy":
-            # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # swapped image ?
             self.imageViewerPhoto.set_data(image)
             self.imageViewerPhoto.update()
             self.imageViewerCanvas.update()
@@ -676,11 +680,11 @@ class SWCameraGui(QtWidgets.QWidget):
     def updateHistogramWidget(self, dataList):
         x, y = dataList
         yR, yG1, yG2, yB = y
-        # self.histographPlot.plot(x, y, stepMode=True, clear=True)
-        self.histographPlot.plot(x, yR, stepMode=True, pen=(255, 0, 0), clear=True)
-        self.histographPlot.plot(x, yG1, stepMode=True, pen=(0, 255, 0))
-        self.histographPlot.plot(x, yG2, stepMode=True, pen=(0, 255, 0))
-        self.histographPlot.plot(x, yB, stepMode=True, pen=(0, 0, 255))
+        # self.histographPlot.plot(x, y, stepMode="center", clear=True)
+        self.histographPlot.plot(x, yR, stepMode="center", pen=(255, 0, 0), clear=True)
+        self.histographPlot.plot(x, yG1, stepMode="center", pen=(0, 255, 0))
+        self.histographPlot.plot(x, yG2, stepMode="center", pen=(0, 255, 0))
+        self.histographPlot.plot(x, yB, stepMode="center", pen=(0, 0, 255))
 
     def updateVectorScope(self, binImage):
         if not self.vectorScopeProcess.isRunning():
@@ -690,8 +694,9 @@ class SWCameraGui(QtWidgets.QWidget):
     def updateVectorScopeWidget(self, vectorScopeData):
         pos, colors = vectorScopeData
         self.vectorScopePlot.set_data(
-            pos * 20, face_color=colors, symbol='o', size=2,
-            edge_width=0, edge_color=None, scaling=False
+            pos * 20, face_color=colors, size=2,
+            edge_width=0, edge_color=None,
+            symbol='o', scaling=False  # FIXME deprecated soon
         )
 
     # ------ CALBACKS ------
@@ -707,6 +712,9 @@ class SWCameraGui(QtWidgets.QWidget):
             self.ia.remote_device.node_map.pgrExposureCompensation.value = float(0.0)
             # TODO have selector for that
             self.ia.remote_device.node_map.PixelFormat.value = 'BayerRG12p'
+
+            # TODO store node name and value in dict for init then apply all
+            # allNodes = self.ia.remote_device.node_map._get_nodes()
 
             self.ia.remote_device.node_map.BalanceRatioSelector.value = 'Red'
             self.ia.remote_device.node_map.BalanceRatio.value = float(1.0)  # how to Kelvin ?
@@ -739,7 +747,7 @@ class SWCameraGui(QtWidgets.QWidget):
 
     def clbkRunCamera(self):
         if self.ia.is_acquiring():
-            self.ia.stop_acquisition()
+            self.ia.stop()
             self.runButton.setText("Run")
             self.recordButton.setEnabled(False)
             self.imageProcess.quit()
@@ -747,7 +755,7 @@ class SWCameraGui(QtWidgets.QWidget):
             self.grabber.quit()
             self.grabber.wait()
         else:
-            self.ia.start_acquisition()
+            self.ia.start()
             self.initAcquisitionThread()
             self.grabber.process()
             self.initImageProcessThread()
@@ -769,7 +777,7 @@ class SWCameraGui(QtWidgets.QWidget):
                 )
                 self.save_threads[-1].start()
             else:
-                print('no savePath ?')
+                logging.error('no savePath ?')
 
     def saveRawImgThread(self, rawData):
         if self.recordButton.isChecked():
@@ -782,7 +790,7 @@ class SWCameraGui(QtWidgets.QWidget):
                 )
                 self.save_threads[-1].start()
             else:
-                print('no savePath ?')
+                logging.error('no savePath ?')
 
     def clbkRecord(self):
         if self.recordButton.isChecked():
@@ -805,7 +813,8 @@ class SWCameraGui(QtWidgets.QWidget):
             for file in tqdm.tqdm(files):
                 save_threads.append(
                     threading.Thread(
-                        target=imageIO.convertTiff2DngAndClean,
+                        target=imageIO.convertTiff2Dng,
+                        # target=imageIO.convertTiff2DngAndClean,
                         args=(str(pathlib.Path(savePath, file)),)
                     )
                 )
@@ -822,7 +831,7 @@ class SWCameraGui(QtWidgets.QWidget):
             self.ia.remote_device.node_map.OffsetY.value = int(
                 (self.ia.remote_device.node_map.HeightMax.value - int(self.verticalResolution.text())) / 2)
         except Exception as e:
-            print(e)
+            logging.error(e)
         self.horizontalResolution.setValue(self.ia.remote_device.node_map.Width.value)
         self.verticalResolution.setValue(self.ia.remote_device.node_map.Height.value)
 
@@ -831,7 +840,7 @@ class SWCameraGui(QtWidgets.QWidget):
             self.ia.remote_device.node_map.ExposureTime.value = \
                 1 / self.framerate.value() * self.shutter.value()/360 * 1e6
         except:  # noqa E722
-            print(f"could not set shutter to {self.shutter.value()}")
+            logging.error(f"could not set shutter to {self.shutter.value()}")
         self.shutter.setValue(
             self.ia.remote_device.node_map.ExposureTime.value / 1e6 / (1 / self.framerate.value()) * 360)
 
@@ -839,7 +848,7 @@ class SWCameraGui(QtWidgets.QWidget):
         try:
             self.ia.remote_device.node_map.AcquisitionFrameRate.value = self.framerate.value()
         except:  # noqa E722
-            print(f"could not set framerate to {self.framerate.value()}")
+            logging.error(f"could not set framerate to {self.framerate.value()}")
         self.framerate.setValue(self.ia.remote_device.node_map.AcquisitionFrameRate.value)
         self.clbkShutterChange()
 
@@ -847,14 +856,14 @@ class SWCameraGui(QtWidgets.QWidget):
         try:
             self.ia.remote_device.node_map.Gain.value = self.gain.value()
         except:  # noqa E722
-            print(f"could not set gain to {self.gain.value()}")
+            logging.error(f"could not set gain to {self.gain.value()}")
         self.gain.setValue(self.ia.remote_device.node_map.Gain.value)
 
     def clbkModeChange(self):
         try:
             self.ia.remote_device.node_map.VideoMode.value = self.mode.currentText()
         except:  # noqa E722
-            print(f"could not set mode to {self.mode.currentText()}")
+            logging.error(f"could not set mode to {self.mode.currentText()}")
 
     def clbkUpdateVideoModes(self):
         self.mode.clear()
@@ -880,7 +889,7 @@ def SWCamera():
     if VECTORSCOPE:
         vispy.app.run()
 
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 
 if __name__ == '__main__':

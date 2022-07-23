@@ -1,7 +1,7 @@
 import numpy as np
 import sys
 import cv2
-import numba
+import numba  # noqa F401
 
 # Sample data taken from https://www.dxomark.com/Cameras/Sony/A7SIII---Measurements
 
@@ -46,7 +46,7 @@ TEST_COLOR_MATRIX = [
 ]
 
 
-@numba.njit()
+# @numba.njit()
 def applyColorMatrix(floatImgData, rgbConversionMatrix):
     """ From https://stackoverflow.com/questions/22081423/apply-transformation-matrix-to-pixels-in-opencv-image """
     rgb_reshaped = floatImgData.reshape((floatImgData.shape[0] * floatImgData.shape[1], floatImgData.shape[2]))

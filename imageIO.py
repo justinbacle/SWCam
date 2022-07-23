@@ -39,11 +39,22 @@ def convertTiff2Dng(tiffImagePath):
                    7: lossless JPEG -> 2335 kB
                    8: Adobe Deflate (16-bit float) -> Slow / ~2000 kB
     """
+    CFA_PATTERN_BGGR = "0"  # noqa F841
+    CFA_PATTERN_GBRG = "1"  # noqa F841
+    CFA_PATTERN_GRBG = "2"  # noqa F841
+    CFA_PATTERN_RGGB = "3"  # noqa F841
+
+    COMPRESSION_NONE = "1"  # noqa F841
+    COMPRESSION_LJPG = "7"  # noqa F841
+    COMPRESSION_ADEF = "8"  # noqa F841
+
     if sys.platform == "linux":
         # Wine call, temporary fix for linux
-        call = subprocess.call(["wine", config.MAKEDNG_PATH, tiffImagePath, dngImgPath, "3", "7"])
+        call = subprocess.call(
+            ["wine", config.MAKEDNG_PATH, tiffImagePath, dngImgPath, CFA_PATTERN_RGGB, COMPRESSION_LJPG])
     else:
-        call = subprocess.call([config.MAKEDNG_PATH, tiffImagePath, dngImgPath, "3", "7"])
+        call = subprocess.call(
+            [config.MAKEDNG_PATH, tiffImagePath, dngImgPath, CFA_PATTERN_RGGB, COMPRESSION_LJPG])
     return dngImgPath, call
 
 
