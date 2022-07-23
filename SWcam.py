@@ -284,6 +284,7 @@ class ImageProcess(QtCore.QThread):
 
 
 def prepareHistogramData(image, bins):
+    np.seterr(divide='ignore')
     yR, x = np.histogram(
         np.log(image[0::2, :].flatten()[0::2]), bins=bins)
     yG1, x = np.histogram(
@@ -696,7 +697,7 @@ class SWCameraGui(QtWidgets.QWidget):
         self.vectorScopePlot.set_data(
             pos * 20, face_color=colors, size=2,
             edge_width=0, edge_color=None,
-            symbol='o', scaling=False  # FIXME deprecated soon
+            # symbol='o', scaling=False  # FIXME deprecated soon
         )
 
     # ------ CALBACKS ------
