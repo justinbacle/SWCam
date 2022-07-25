@@ -1,7 +1,7 @@
 import sys
 import os
 from PySide6 import QtWidgets, QtGui, QtCore
-from harvesters.core import Harvester, Buffer, TimeoutException
+from harvesters.core import Harvester
 import logging
 import cv2
 import numpy as np
@@ -13,12 +13,11 @@ import pyqtgraph
 import vispy
 import vispy.scene
 
-import utils
 import config
-import imageIO
-import vectorscope
-import color_correct
-
+from lib import utils
+from lib import imageIO
+from lib import color_correct
+import SWcam_Threads as threads
 
 HISTOGRAM = True
 VECTORSCOPE = True
@@ -27,320 +26,6 @@ VECTORSCOPE = True
 IMAGE_DRAW_METHOD = "Vispy"
 
 RAW = False
-
-
-class FrameGrabber(QtCore.QThread):
-    def __init__(self, ia, parent=None):
-        super(FrameGrabber, self).__init__(parent)
-        self.mutex = QtCore.QMutex()
-        self.condition = QtCore.QWaitCondition()
-
-        self.ia = ia
-
-    imageReady = QtCore.Signal(np.ndarray)
-    rawImageReady = QtCore.Signal(Buffer)
-
-    def process(self):
-        try:
-            if not self.isRunning():
-                self.start(QtCore.QThread.HighPriority)
-            else:
-                self.restart = True
-                self.condition.wakeOne()
-        except Exception as e:
-            raise(e)
-
-    def stop(self):
-        try:
-            self.mutex.lock()
-            self.abort = True
-            self.condition.wakeOne()
-            self.mutex.unlock()
-        except Exception as e:
-            logging.error(e)
-
-    def run(self):
-        self.mutex.lock()
-        while self.ia.is_acquiring():
-            try:
-                with self.ia.fetch(timeout=1) as buffer:
-                    component = buffer.payload.components[0]
-                    if component is not None:
-                        self.rawImageReady.emit(buffer.payload._buffer.raw_buffer)
-                        binImage = component.data.reshape(component.height, component.width)
-                        self.imageReady.emit(binImage)
-                        buffer.queue()
-            except TimeoutException:
-                logging.error("Timeout error")
-            except Exception as e:
-                if "Insufficient amount of announced buffers to start acquisition." in str(e) \
-                        and sys.platform == "linux":
-                    logging.error(
-                        """It looks like usb buffer is restricted. Read here to fix it :
-                        https://www.ximea.com/support/wiki/apis/Linux_USB30_Support#Increase-the-USB-Buffer-Size-in-Linux
-                    """)
-                else:
-                    logging.error(e)
-        logging.info("Ending Acquisition")
-        self.mutex.unlock()
-
-
-class HistogramProcess(QtCore.QThread):
-    def __init__(self, parent=None):
-        super(HistogramProcess, self).__init__(parent)
-        self.mutex = QtCore.QMutex()
-        self.condition = QtCore.QWaitCondition()
-
-        # self.plotWidget = None
-        self.image = None
-
-    dataReady = QtCore.Signal(list)
-    finished = QtCore.Signal()
-    NUM_BINS = 2**10
-    bins = np.linspace(int(0), np.log(2**12), NUM_BINS)
-
-    # def setPlottingWidget(self, plotWidget):
-    #     self.plotWidget = plotWidget
-
-    def stop(self):
-        self.mutex.lock()
-        self.abort = True
-        self.condition.wakeOne()
-        self.mutex.unlock()
-
-    def setImg(self, image):
-        self.mutex.lock()
-        self.image = image
-        self.mutex.unlock()
-
-    def process(self):
-        try:
-            if not self.isRunning():
-                self.start(QtCore.QThread.LowPriority)
-            else:
-                self.restart = True
-                self.condition.wakeOne()
-        except Exception as e:
-            raise(e)
-
-    def run(self):
-        try:
-            if self.image is not None:
-                x, [yR, yG1, yG2, yB] = prepareHistogramData(self.image, self.bins)
-                self.dataReady.emit([x, [yR, yG1, yG2, yB]])
-                self.image = None
-            else:
-                logging.debug(f"{self} got {self.image} image to process")
-            self.finished.emit()
-
-        except Exception as e:
-            raise(e)
-
-
-class VectorScopeProcess(QtCore.QThread):
-    def __init__(self, parent=None):
-        super(VectorScopeProcess, self).__init__(parent)
-        self.mutex = QtCore.QMutex()
-        self.condition = QtCore.QWaitCondition()
-
-        # self.plotWidget = None
-        self.image = None
-
-    dataReady = QtCore.Signal(list)
-    finished = QtCore.Signal()
-
-    def stop(self):
-        self.mutex.lock()
-        self.abort = True
-        self.condition.wakeOne()
-        self.mutex.unlock()
-
-    def setImg(self, image):
-        self.mutex.lock()
-        self.image = image
-        self.mutex.unlock()
-
-    def process(self):
-        try:
-            if not self.isRunning():
-                self.start(QtCore.QThread.NormalPriority)
-            else:
-                self.restart = True
-                self.condition.wakeOne()
-        except Exception as e:
-            raise(e)
-
-    def run(self):
-        try:
-            if self.image is not None:
-
-                # rgbImg = cv2.cvtColor(self.image, cv2.COLOR_BayerRG2RGB)
-                # TODO check properly if image is bayer or rgb
-                rgbImg = self.image
-
-                rgbImg = cv2.resize(
-                    rgbImg, (int(rgbImg.shape[1] * 0.1), int(rgbImg.shape[0] * 0.1)), interpolation=cv2.INTER_AREA)
-                cbData, crData, colors = vectorscope.extractCbCrData(rgbImg)
-                pos = np.transpose(np.vstack(
-                    (
-                        cbData-0.5,
-                        crData-0.5,
-                        np.zeros_like(cbData)
-                    )
-                ))
-                self.dataReady.emit([pos, colors])
-            else:
-                logging.debug(f"{self} got {self.image} image to process")
-            self.finished.emit()
-
-        except Exception as e:
-            raise(e)
-
-
-class ImageProcess(QtCore.QThread):
-    def __init__(self, parent=None):
-        super(ImageProcess, self).__init__(parent)
-        self.mutex = QtCore.QMutex()
-        self.condition = QtCore.QWaitCondition()
-
-        self.LUT = None
-        self.gain = None
-        self.binImage = None
-        self.CCM = None
-        # self.WB = cv2.xphoto.createSimpleWB()
-        # self.WB = cv2.xphoto.createGrayworldWB()
-
-    qImageReady = QtCore.Signal(QtGui.QImage)
-    imageReady = QtCore.Signal(np.ndarray)
-    finished = QtCore.Signal()
-
-    def stop(self):
-        self.mutex.lock()
-        self.abort = True
-        self.condition.wakeOne()
-        self.mutex.unlock()
-
-    def setLUT(self, LUT):
-        self.mutex.lock()
-        self.LUT = LUT
-        self.mutex.unlock()
-
-    def setGamma(self, redGain, greenGain, blueGain):
-        self.mutex.lock()
-        if IMAGE_DRAW_METHOD == "QtImageViewer":
-            # reverse order for some reason
-            self.gain = [blueGain, greenGain, redGain]
-        else:
-            self.gain = [redGain, greenGain, blueGain]
-        self.mutex.unlock()
-
-    def setImg(self, binImage):
-        self.mutex.lock()
-        self.binImage = binImage
-        self.mutex.unlock()
-
-    def setCCM(self, CCM: np.ndarray):
-        self.mutex.lock()
-        self.CCM = CCM
-        self.mutex.unlock()
-
-    def process(self):
-        try:
-            if not self.isRunning():
-                self.start(QtCore.QThread.LowPriority)
-            else:
-                self.restart = True
-                self.condition.wakeOne()
-        except Exception as e:
-            raise e
-
-    def run(self):
-        try:
-            if self.binImage is not None:
-                # rgbImg = processImg(
-                #     self.binImage, Gamma=None, LUT=self.LUT, Gain=self.gain)
-                rgbImg = processImg(
-                    self.binImage,
-                    # colorMatrix=color_correct.COLOR_MATRIX["BFLY-U3-23S6C"],
-                    colorMatrix=self.CCM,
-                    LUT=self.LUT,
-                    # Gain=color_correct.WB_Scale["CIE-D50"],
-                    Gain=self.gain,
-                )
-                self.imageReady.emit(rgbImg)
-                # qImg = QtGui.QImage(
-                #     rgbImg.data,
-                #     rgbImg.shape[1],
-                #     rgbImg.shape[0],
-                #     rgbImg.shape[1] * rgbImg.shape[2],
-                #     QtGui.QImage.Format_RGB888
-                # )
-                # self.qImageReady.emit(qImg)
-            else:
-                logging.debug(f"{self} got {self.binImage} image to process")
-            self.finished.emit()
-        except Exception as e:
-            raise(e)
-
-
-def prepareHistogramData(image, bins):
-    np.seterr(divide='ignore')
-    yR, x = np.histogram(
-        np.log(image[0::2, :].flatten()[0::2]), bins=bins)
-    yG1, x = np.histogram(
-        np.log(image[0::2, :].flatten()[1::2]), bins=bins)
-    yG2, x = np.histogram(
-        np.log(image[1::2, :].flatten()[0::2]), bins=bins)
-    yB, x = np.histogram(
-        np.log(image[1::2, :].flatten()[1::2]), bins=bins)
-    return x, [yR, yG1, yG2, yB]
-
-
-def processImg(rgbImg, LUT=None, CLAHE=None, colorMatrix=None, Gain: list = None, Gamma: float = None, WB=None):
-
-    rgbImg = cv2.cvtColor(np.uint16(rgbImg), cv2.COLOR_BAYER_RG2BGR_EA)  # should be RGB instead of BGR
-
-    # CLAHE METHOD
-    if CLAHE is not None:
-        for i in range(3):
-            rgbImg[i] = CLAHE.apply(rgbImg[i])
-        rgbImg = cv2.convertScaleAbs(rgbImg)
-
-    if colorMatrix is not None:
-        rgbImg = color_correct.RGBraw2sRGB(rgbImg, colorMatrix)
-
-    if Gain is not None:
-        Gain = np.array(Gain) / max(Gain)
-        for i, colorGain in enumerate(Gain):
-            rgbImg[:, :, i] = rgbImg[:, :, i] * colorGain
-
-    # 8-Bit LUT METHOD FAST, noisy  <-- works
-    if LUT is not None:
-        rgbImg = cv2.convertScaleAbs(rgbImg, alpha=1/8)
-        rgbImg = cv2.LUT(rgbImg, LUT)
-
-    if Gamma is not None:
-        # Gamma Luma METHOD NOT WORKING
-        # rgbImg = rgbImg.astype(np.float32)
-        # labImg = cv2.cvtColor(rgbImg, cv2.COLOR_RGB2Lab)
-        # mid = 0.5
-        # mean = np.mean(labImg[0])
-        # gamma = math.log(mid*255)/math.log(mean)
-        # labImg[0] = np.power(labImg[0], gamma)
-        # rgbImg = cv2.cvtColor(labImg, cv2.COLOR_Lab2RGB)
-        # rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
-
-        # # Gamma RGB METHOD SLOW
-        rgbImg = rgbImg.astype(np.float32) / np.max(rgbImg)
-        rgbImg = np.power(rgbImg, Gamma)
-        rgbImg = rgbImg * 255
-        rgbImg = cv2.convertScaleAbs(rgbImg).astype(np.uint8)
-
-    # Auto White Balance
-    if WB is not None:
-        rgbImg = WB.balanceWhite(rgbImg)
-
-    return rgbImg.astype(np.uint8)
 
 
 # LUT GENERATOR
@@ -371,7 +56,7 @@ class SWCameraGui(QtWidgets.QWidget):
 
     def initAcquisitionThread(self):
         # Acquisition Thread
-        self.grabber = FrameGrabber(self.ia)
+        self.grabber = threads.FrameGrabber(self.ia)
         if RAW:
             self.grabber.rawImageReady.connect(self.saveRawImgThread)
         else:
@@ -383,16 +68,16 @@ class SWCameraGui(QtWidgets.QWidget):
         #     self.grabber.imageReady.connect(self.updateVectorScope)
 
     def initImageProcessThread(self):
-        self.imageProcess = ImageProcess()
+        self.imageProcess = threads.ImageProcess(drawMethod=IMAGE_DRAW_METHOD)
         self.imageProcess.imageReady.connect(self.drawImg)
         if VECTORSCOPE:
             self.imageProcess.imageReady.connect(self.updateVectorScope)
 
         if HISTOGRAM:
-            self.histogramProcess = HistogramProcess()
+            self.histogramProcess = threads.HistogramProcess()
             self.histogramProcess.dataReady.connect(self.updateHistogramWidget)
         if VECTORSCOPE:
-            self.vectorScopeProcess = VectorScopeProcess()
+            self.vectorScopeProcess = threads.VectorScopeProcess()
             self.vectorScopeProcess.dataReady.connect(self.updateVectorScopeWidget)
 
     def initUI(self):
@@ -535,7 +220,7 @@ class SWCameraGui(QtWidgets.QWidget):
             self.histogram = pyqtgraph.GraphicsLayoutWidget()
             self.histographPlot = self.histogram.addPlot()
             # self.histogram.setMaximumSize(320, 120)
-            # self.histographPlot.setLogMode(False, True)
+            self.histographPlot.setLogMode(False, True)
             self.rightLayout.addWidget(self.histogram)
 
         # vispy Vectorscope
@@ -597,7 +282,6 @@ class SWCameraGui(QtWidgets.QWidget):
         curve = np.multiply(np.uint16(curve), 4)
         curve = processPixelLUT(curve).astype('uint8')
         self.LUT = np.dstack((curve, curve, curve))
-
         self.CLAHE = cv2.createCLAHE(
             clipLimit=2.0,
             tileGridSize=(8, 8)
@@ -622,26 +306,30 @@ class SWCameraGui(QtWidgets.QWidget):
         try:
             self.imageProcess.quit()
             self.imageProcess.wait()
-        except AttributeError as e:
-            logging.error(e)
+        except AttributeError as e:  # noqa F841
+            # logging.error(e)
+            ...
 
         try:
             self.vectorScopeProcess.quit()
             self.vectorScopeProcess.wait()
-        except AttributeError as e:
-            logging.error(e)
+        except AttributeError as e:  # noqa F841
+            # logging.error(e)
+            ...
 
         try:
             self.imageProcess.quit()
             self.imageProcess.wait()
-        except AttributeError as e:
-            logging.error(e)
+        except AttributeError as e:  # noqa F841
+            # logging.error(e)
+            ...
 
         try:
             self.grabber.quit()
             self.grabber.wait()
-        except AttributeError as e:
-            logging.error(e)
+        except AttributeError as e:  # noqa F841
+            # logging.error(e)
+            ...
 
         try:
             vispy.app.quit()
@@ -878,7 +566,7 @@ class SWCameraGui(QtWidgets.QWidget):
         self.greenGammaLabel.setText("G : " + str(greenGain))
         blueGain = self.blueGain.value() / 100
         self.blueGammaLabel.setText("B : " + str(blueGain))
-        self.imageProcess.setGamma(redGain, greenGain, blueGain)
+        self.imageProcess.setGain(redGain, greenGain, blueGain)
 
     def updateCCM(self):
         self.imageProcess.setCCM(self.getCCM())

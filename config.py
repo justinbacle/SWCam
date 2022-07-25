@@ -10,6 +10,9 @@ logging.basicConfig(
     level=logging.DEBUG
 )
 
+numba_logger = logging.getLogger('numba')
+numba_logger.setLevel(logging.WARNING)
+
 # ---------------------------- GenTL Producer Path --------------------------- #
 try:
     CTI_FILEPATH = os.getenv("GENICAM_GENTL64_PATH")

@@ -132,3 +132,6 @@ dmypy.json
 .vscode/*
 .history/*
 _scripts/*
+
+# Unzipped prerequisites
+prerequisites/spinnaker-2.7.0.128-amd64
