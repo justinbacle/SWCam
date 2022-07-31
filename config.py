@@ -16,14 +16,18 @@ numba_logger.setLevel(logging.WARNING)
 # ---------------------------- GenTL Producer Path --------------------------- #
 try:
     CTI_FILEPATH = os.getenv("GENICAM_GENTL64_PATH")
+    if ";" in CTI_FILEPATH:  # TODO handle multiple producers
+        CTI_FILEPATH = CTI_FILEPATH.split(";")[1]
     if CTI_FILEPATH is not None:
+        for file in os.listdir(CTI_FILEPATH):
+            if file.endswith(".cti"):
+                CTI_FILEPATH = os.path.join(CTI_FILEPATH, file)
+                break
         logging.info(f"Found GenTL producer: {CTI_FILEPATH}")
-    else:
-        CTI_FILEPATH = os.getenv("GENICAM_GENTL32_PATH")
-        if CTI_FILEPATH is not None:
-            logging.info(f"Found GenTL producer: {CTI_FILEPATH}")
-        else:
-            raise FileNotFoundError
+
+    else:  # We do not look for 32 bit versions, since harvester does not like them
+        raise FileNotFoundError
+
 except FileNotFoundError:
     if sys.platform == "linux":
         CTI_FILEPATH = "/opt/spinnaker/lib/flir-gentl/FLIR_GenTL.cti"

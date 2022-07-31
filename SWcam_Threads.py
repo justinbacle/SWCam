@@ -4,14 +4,15 @@ import cv2
 import numpy as np
 import numba  # noqa F401
 from PySide6 import QtGui, QtCore
-from harvesters.core import Buffer, TimeoutException
+from harvesters.core import Buffer, TimeoutException, ImageAcquirer
+import traceback
 
 from lib import vectorscope
 from lib import color_correct
 
 
 class FrameGrabber(QtCore.QThread):
-    def __init__(self, ia, parent=None):
+    def __init__(self, ia: ImageAcquirer, parent=None):
         super(FrameGrabber, self).__init__(parent)
         self.mutex = QtCore.QMutex()
         self.condition = QtCore.QWaitCondition()
@@ -44,7 +45,7 @@ class FrameGrabber(QtCore.QThread):
         self.mutex.lock()
         while self.ia.is_acquiring():
             try:
-                with self.ia.fetch(timeout=1) as buffer:
+                with self.ia.fetch(timeout=1.0) as buffer:
                     component = buffer.payload.components[0]
                     if component is not None:
                         self.rawImageReady.emit(buffer.payload._buffer.raw_buffer)
@@ -62,7 +63,7 @@ class FrameGrabber(QtCore.QThread):
                         orhttps://www.ximea.com/support/wiki/apis/Linux_USB30_Support#Increase-the-USB-Buffer-Size-in-Linux
                     """)
                 else:
-                    logging.error(e)
+                    logging.error(traceback.print_exc())
         logging.info("Ending Acquisition")
         self.mutex.unlock()
 

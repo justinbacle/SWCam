@@ -393,24 +393,29 @@ class SWCameraGui(QtWidgets.QWidget):
     def clbkConnectCamera(self):
         # Init camera parameters
         if self.ia is not None:
+            # TODO store node name and value in dict for init then apply all
+            # allNodes = self.ia.remote_device.node_map._get_nodes()
             self.ia.remote_device.node_map.DeviceLinkThroughputLimit.value = \
                 self.ia.remote_device.node_map.DeviceMaxThroughput.value
             self.ia.remote_device.node_map.AcquisitionFrameRateAuto.value = 'Off'
             self.ia.remote_device.node_map.AcquisitionFrameRateEnabled.value = True
-            self.ia.remote_device.node_map.BalanceWhiteAuto.value = 'Off'
+            self.ia.remote_device.node_map.PixelFormat.value = 'BayerRG12p'  # TODO have selector for that
+            self.ia.remote_device.node_map.BalanceWhiteAuto.value = 'Off'  # ! not possible from reset camera
             self.ia.remote_device.node_map.pgrExposureCompensation.value = float(0.0)
-            # TODO have selector for that
-            self.ia.remote_device.node_map.PixelFormat.value = 'BayerRG12p'
-
-            # TODO store node name and value in dict for init then apply all
-            # allNodes = self.ia.remote_device.node_map._get_nodes()
-
             self.ia.remote_device.node_map.BalanceRatioSelector.value = 'Red'
             self.ia.remote_device.node_map.BalanceRatio.value = float(1.0)  # how to Kelvin ?
             self.ia.remote_device.node_map.BalanceRatioSelector.value = 'Blue'
             self.ia.remote_device.node_map.BalanceRatio.value = float(1.0)  # how to Kelvin ?
             self.ia.remote_device.node_map.BlackLevel.value = float(0.0)
             self.ia.remote_device.node_map.GainAuto.value = 'Off'
+
+            self.ia.remote_device.node_map.ExposureAuto.value = 'Off'
+            # Set shutter to 180° by default
+            try:
+                self.ia.remote_device.node_map.ExposureTime.value = \
+                    1 / self.framerate.value() * 180/360 * 1e6
+            except:  # noqa E722
+                logging.error(f"could not set shutter to {self.shutter.value()}")
 
             self.clbkReadCameraParams()
             self.clbkUpdateVideoModes()
